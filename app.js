@@ -2046,255 +2046,264 @@ async function updatePassword() {
 async function downloadReport() {
   toast('Generating PDF report...', 'success');
   try {
-  const { jsPDF } = window.jspdf;
-  const pdf = new jsPDF('p', 'mm', 'a4');
-  // jsPDF's built-in Helvetica doesn't support ₹ (U+20B9) — use Rs. instead
-  const pdfFmt = n => 'Rs. ' + Number(n).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  
-  const pageWidth = pdf.internal.pageSize.getWidth();
-  const pageHeight = pdf.internal.pageSize.getHeight();
-  const margin = 15;
-  let yPos = margin;
-  
-  // Helper function to add new page if needed
-  const checkPageBreak = (requiredSpace) => {
-    if (yPos + requiredSpace > pageHeight - margin) {
-      pdf.addPage();
-      yPos = margin;
-      return true;
-    }
-    return false;
-  };
-  
-  // Header
-  pdf.setFillColor(13, 31, 60);
-  pdf.rect(0, 0, pageWidth, 40, 'F');
-  pdf.setTextColor(255, 255, 255);
-  pdf.setFontSize(24);
-  pdf.setFont('helvetica', 'bold');
-  pdf.text('Expense Tracker Report', margin, 20);
-  
-  pdf.setFontSize(10);
-  pdf.setFont('helvetica', 'normal');
-  const reportDate = new Date().toLocaleDateString('en-IN', { 
-    year: 'numeric', month: 'long', day: 'numeric' 
-  });
-  pdf.text(`Generated on: ${reportDate}`, margin, 30);
-  
-  yPos = 50;
-  
-  // User Info
-  pdf.setTextColor(0, 0, 0);
-  pdf.setFontSize(12);
-  pdf.setFont('helvetica', 'bold');
-  pdf.text('User Information', margin, yPos);
-  yPos += 8;
-  
-  pdf.setFontSize(10);
-  pdf.setFont('helvetica', 'normal');
-  if (userProfile) {
-    const fullName = [userProfile.first_name, userProfile.middle_name, userProfile.surname]
-      .filter(Boolean).join(' ');
-    pdf.text(`Name: ${fullName || 'N/A'}`, margin, yPos);
-    yPos += 6;
-    pdf.text(`Email: ${currentUser?.email || 'N/A'}`, margin, yPos);
-    yPos += 6;
-    pdf.text(`Monthly Income: ${pdfFmt(userIncome)}`, margin, yPos);
-    yPos += 10;
-  }
-  
-  // Summary Statistics
-  checkPageBreak(40);
-  pdf.setFontSize(14);
-  pdf.setFont('helvetica', 'bold');
-  pdf.text('Summary Statistics', margin, yPos);
-  yPos += 8;
-  
-  const total = allExpenses.reduce((s, e) => s + parseFloat(e.amount), 0);
-  const now = new Date();
-  const mo = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
-  const moExp = allExpenses.filter(e => e.date.startsWith(mo));
-  const moTotal = moExp.reduce((s, e) => s + parseFloat(e.amount), 0);
-  const days = new Date(now.getFullYear(), now.getMonth()+1, 0).getDate();
-  const daily = days ? moTotal / days : 0;
-  
-  pdf.setFillColor(240, 240, 245);
-  pdf.rect(margin, yPos, pageWidth - 2*margin, 30, 'F');
-  
-  pdf.setFontSize(10);
-  pdf.setFont('helvetica', 'normal');
-  pdf.text(`Total Expenses: ${pdfFmt(total)}`, margin + 5, yPos + 8);
-  pdf.text(`Monthly Spend: ${pdfFmt(moTotal)}`, margin + 5, yPos + 16);
-  pdf.text(`Daily Average: ${pdfFmt(daily)}`, margin + 5, yPos + 24);
-  yPos += 40;
-  
-  // Category Breakdown
-  checkPageBreak(60);
-  pdf.setFontSize(14);
-  pdf.setFont('helvetica', 'bold');
-  pdf.text('Category Breakdown (This Month)', margin, yPos);
-  yPos += 8;
-  
-  const byCat = {};
-  moExp.forEach(e => {
-    const name = e.categories?.name || getCatName(e.category_id) || 'Other';
-    byCat[name] = (byCat[name] || 0) + parseFloat(e.amount);
-  });
-  
-  const categories = Object.keys(byCat);
-  if (categories.length > 0) {
-    pdf.setFontSize(10);
-    pdf.setFont('helvetica', 'normal');
-    
-    categories.forEach((cat, i) => {
-      checkPageBreak(8);
-      const amount = byCat[cat];
-      const percentage = moTotal > 0 ? ((amount / moTotal) * 100).toFixed(1) : 0;
-      
-      // Category bar
-      const barWidth = (amount / moTotal) * (pageWidth - 2*margin - 60);
-      pdf.setFillColor(206, 181, 212);
-      pdf.rect(margin, yPos - 4, barWidth, 6, 'F');
-      
-      pdf.text(cat, margin, yPos);
-      pdf.text(`${pdfFmt(amount)} (${percentage}%)`, pageWidth - margin - 50, yPos, { align: 'right' });
-      yPos += 8;
+    const now = new Date();
+    const mo = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
+    const moExp = allExpenses.filter(e => e.date.startsWith(mo));
+
+    let moIncome = 0, moSpend = 0;
+    moExp.forEach(e => {
+      const cat = allCategories.find(c => c.id === e.category_id);
+      if (cat?.type === 'received') moIncome += parseFloat(e.amount);
+      else moSpend += parseFloat(e.amount);
     });
-  } else {
-    pdf.setFontSize(10);
-    pdf.text('No expenses for this month', margin, yPos);
-    yPos += 8;
-  }
-  yPos += 5;
-  
-  // Monthly Summary Table
-  checkPageBreak(80);
-  pdf.setFontSize(14);
-  pdf.setFont('helvetica', 'bold');
-  pdf.text('Monthly Summary', margin, yPos);
-  yPos += 10;
-  
-  const monthly = {};
-  allExpenses.forEach(e => {
-    const m = e.date.slice(0, 7);
-    if (!monthly[m]) monthly[m] = { received: 0, spent: 0, count: 0 };
-    const cat = allCategories.find(c => c.id === e.category_id);
-    const isReceived = cat ? cat.type === 'received' : false;
-    const amount = parseFloat(e.amount);
-    if (isReceived) monthly[m].received += amount;
-    else monthly[m].spent += amount;
-    monthly[m].count++;
-  });
-  
-  const months = Object.keys(monthly).sort().reverse().slice(0, 12); // Last 12 months
-  
-  if (months.length > 0) {
-    // Table header
-    pdf.setFillColor(45, 90, 123);
-    pdf.setTextColor(255, 255, 255);
-    pdf.rect(margin, yPos, pageWidth - 2*margin, 8, 'F');
-    pdf.setFontSize(9);
-    pdf.setFont('helvetica', 'bold');
-    
-    const colWidth = (pageWidth - 2*margin) / 5;
-    pdf.text('Month', margin + 2, yPos + 5);
-    pdf.text('Received', margin + colWidth + 2, yPos + 5);
-    pdf.text('Spent', margin + 2*colWidth + 2, yPos + 5);
-    pdf.text('Net Balance', margin + 3*colWidth + 2, yPos + 5);
-    pdf.text('Savings %', margin + 4*colWidth + 2, yPos + 5);
-    yPos += 8;
-    
-    // Table rows
-    pdf.setTextColor(0, 0, 0);
-    pdf.setFont('helvetica', 'normal');
-    
-    months.forEach((m, i) => {
-      checkPageBreak(8);
-      
+    const netBalance = moIncome - moSpend;
+    const savingsRate = moIncome > 0 ? ((netBalance / moIncome) * 100).toFixed(1) : '0.0';
+    const days = new Date(now.getFullYear(), now.getMonth()+1, 0).getDate();
+    const dailyAvg = days ? moSpend / days : 0;
+
+    // Category breakdown (spend only, sorted by amount)
+    const byCat = {};
+    moExp.forEach(e => {
+      const cat = allCategories.find(c => c.id === e.category_id);
+      if (cat?.type !== 'received') {
+        const name = e.categories?.name || cat?.name || 'Other';
+        byCat[name] = (byCat[name] || 0) + parseFloat(e.amount);
+      }
+    });
+    const catEntries = Object.entries(byCat).sort((a, b) => b[1] - a[1]);
+
+    // Monthly summary (last 6 months)
+    const monthly = {};
+    allExpenses.forEach(e => {
+      const m = e.date.slice(0, 7);
+      if (!monthly[m]) monthly[m] = { received: 0, spent: 0 };
+      const cat = allCategories.find(c => c.id === e.category_id);
+      if (cat?.type === 'received') monthly[m].received += parseFloat(e.amount);
+      else monthly[m].spent += parseFloat(e.amount);
+    });
+    const monthKeys = Object.keys(monthly).sort().reverse().slice(0, 6);
+
+    const recent = allExpenses.slice(0, 15);
+    const fullName = userProfile
+      ? [userProfile.first_name, userProfile.middle_name, userProfile.surname].filter(Boolean).join(' ')
+      : '';
+    const email = currentUser?.email || '';
+    const reportDate = now.toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' });
+    const monthYear = now.toLocaleDateString('en-IN', { month: 'long', year: 'numeric' });
+    const rf = n => '₹' + Math.abs(Number(n)).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const catColors = ['#a855f7','#3b82f6','#10b981','#f59e0b','#ef4444','#ec4899','#8b5cf6','#06b6d4'];
+
+    const catRowsHtml = catEntries.length === 0
+      ? '<p style="color:#94a3b8;font-size:13px;padding:8px 0;">No spending this month</p>'
+      : catEntries.map(([name, amount], i) => {
+          const pct = moSpend > 0 ? ((amount / moSpend) * 100).toFixed(1) : '0.0';
+          const barPct = moSpend > 0 ? (amount / moSpend) * 100 : 0;
+          const color = catColors[i % catColors.length];
+          return `<div style="margin-bottom:14px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px;">
+              <span style="font-size:13px;color:#374151;font-weight:500;">${name}</span>
+              <span style="font-size:13px;color:#374151;">${rf(amount)}&nbsp;&nbsp;<span style="color:#94a3b8;">${pct}%</span></span>
+            </div>
+            <div style="background:#e2e8f0;border-radius:6px;height:9px;overflow:hidden;">
+              <div style="width:${barPct}%;height:100%;background:${color};border-radius:6px;"></div>
+            </div>
+          </div>`;
+        }).join('');
+
+    const monthRowsHtml = monthKeys.map((m, i) => {
       const { received, spent } = monthly[m];
       const net = received - spent;
       const sr = received > 0 ? ((net / received) * 100).toFixed(1) + '%' : 'N/A';
-      const label = new Date(m + '-01').toLocaleDateString('en-IN', { 
-        month: 'short', year: 'numeric' 
-      });
-      
-      // Alternate row colors
-      if (i % 2 === 0) {
-        pdf.setFillColor(245, 245, 250);
-        pdf.rect(margin, yPos - 5, pageWidth - 2*margin, 7, 'F');
-      }
-      
-      pdf.setTextColor(0, 0, 0);
-      pdf.text(label, margin + 2, yPos);
-      pdf.setTextColor(52, 211, 153);
-      pdf.text(pdfFmt(received), margin + colWidth + 2, yPos);
-      pdf.setTextColor(239, 68, 68);
-      pdf.text(pdfFmt(spent), margin + 2*colWidth + 2, yPos);
+      const label = new Date(m + '-02').toLocaleDateString('en-IN', { month: 'long', year: 'numeric' });
+      const bg = i % 2 === 0 ? '#f8fafc' : 'white';
+      const netColor = net >= 0 ? '#059669' : '#dc2626';
+      const netStr = (net >= 0 ? '' : '-') + rf(Math.abs(net));
+      return `<tr style="background:${bg};">
+        <td style="padding:10px 14px;color:#0f172a;font-weight:600;">${label}</td>
+        <td style="padding:10px 14px;color:#059669;font-weight:600;">${rf(received)}</td>
+        <td style="padding:10px 14px;color:#dc2626;font-weight:600;">${rf(spent)}</td>
+        <td style="padding:10px 14px;color:${netColor};font-weight:600;">${netStr}</td>
+        <td style="padding:10px 14px;color:#374151;">${sr}</td>
+      </tr>`;
+    }).join('');
 
-      // Color code net balance
-      pdf.setTextColor(net >= 0 ? 52 : 239, net >= 0 ? 211 : 68, net >= 0 ? 153 : 68);
-      pdf.text(pdfFmt(net), margin + 3*colWidth + 2, yPos);
-      pdf.setTextColor(0, 0, 0);
-      pdf.text(sr, margin + 4*colWidth + 2, yPos);
-      
-      yPos += 7;
+    const txnRowsHtml = recent.map(e => {
+      const cat = allCategories.find(c => c.id === e.category_id);
+      const isReceived = cat?.type === 'received';
+      const catName = e.categories?.name || cat?.name || 'Other';
+      const dateStr = new Date(e.date + 'T12:00:00').toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
+      const amtColor = isReceived ? '#059669' : '#dc2626';
+      const amtPrefix = isReceived ? '+' : '-';
+      const badgeBg = isReceived ? '#d1fae5' : '#e0e7ff';
+      const badgeColor = isReceived ? '#065f46' : '#3730a3';
+      return `<tr style="border-bottom:1px solid #f1f5f9;">
+        <td style="padding:10px 14px;color:#64748b;font-size:12px;white-space:nowrap;">${dateStr}</td>
+        <td style="padding:10px 14px;">
+          <span style="background:${badgeBg};color:${badgeColor};padding:3px 10px;border-radius:20px;font-size:11px;font-weight:600;">${catName}</span>
+        </td>
+        <td style="padding:10px 14px;color:#374151;font-size:13px;">${e.description || ''}</td>
+        <td style="padding:10px 14px;text-align:right;color:${amtColor};font-weight:700;white-space:nowrap;">${amtPrefix}${rf(e.amount)}</td>
+      </tr>`;
+    }).join('');
+
+    const html = `<div style="width:794px;font-family:Arial,Helvetica,sans-serif;background:#f1f5f9;">
+
+      <div style="background:white;margin-bottom:0;">
+
+        <!-- Header -->
+        <div style="background:#0d1f3c;padding:22px 32px;display:flex;justify-content:space-between;align-items:center;">
+          <div style="color:white;font-size:22px;font-weight:700;letter-spacing:-0.3px;">Expense Tracker</div>
+          <div style="display:flex;align-items:center;gap:16px;">
+            <div style="color:#94a3b8;font-size:12px;">Report: ${reportDate}</div>
+            <div style="width:52px;height:52px;border-radius:50%;background:#1e3a5f;display:flex;align-items:center;justify-content:center;color:white;font-size:20px;font-weight:700;border:3px solid #334155;flex-shrink:0;">
+              ${(fullName?.[0] || email[0] || 'U').toUpperCase()}
+            </div>
+          </div>
+        </div>
+
+        <!-- User Info -->
+        <div style="margin:24px 32px 16px;padding:16px 22px;background:#f8fafc;border-radius:10px;border:1px solid #e2e8f0;">
+          <div style="font-size:17px;font-weight:700;color:#0f172a;margin-bottom:7px;">${fullName || 'User'}</div>
+          <div style="color:#64748b;font-size:12px;display:flex;gap:12px;flex-wrap:wrap;align-items:center;">
+            <span>${email}</span>
+            <span style="color:#cbd5e1;">|</span>
+            <span>Monthly Income: ${rf(userIncome)}</span>
+            <span style="color:#cbd5e1;">|</span>
+            <span>Report Period: ${monthYear}</span>
+          </div>
+        </div>
+
+        <!-- Stat Cards -->
+        <div style="display:flex;gap:12px;margin:0 32px 16px;">
+          <div style="flex:1;border:1px solid #e2e8f0;border-radius:10px;padding:16px;border-top:4px solid #34d399;">
+            <div style="font-size:9px;color:#94a3b8;text-transform:uppercase;letter-spacing:0.8px;margin-bottom:8px;font-weight:600;">NET BALANCE</div>
+            <div style="font-size:18px;font-weight:700;color:#0f172a;">${rf(netBalance)}</div>
+          </div>
+          <div style="flex:1;border:1px solid #e2e8f0;border-radius:10px;padding:16px;border-top:4px solid #3b82f6;">
+            <div style="font-size:9px;color:#94a3b8;text-transform:uppercase;letter-spacing:0.8px;margin-bottom:8px;font-weight:600;">MONTH INCOME</div>
+            <div style="font-size:18px;font-weight:700;color:#0f172a;">${rf(moIncome)}</div>
+          </div>
+          <div style="flex:1;border:1px solid #e2e8f0;border-radius:10px;padding:16px;border-top:4px solid #ef4444;">
+            <div style="font-size:9px;color:#94a3b8;text-transform:uppercase;letter-spacing:0.8px;margin-bottom:8px;font-weight:600;">MONTH SPEND</div>
+            <div style="font-size:18px;font-weight:700;color:#0f172a;">${rf(moSpend)}</div>
+          </div>
+          <div style="flex:1;border:1px solid #e2e8f0;border-radius:10px;padding:16px;border-top:4px solid #a855f7;">
+            <div style="font-size:9px;color:#94a3b8;text-transform:uppercase;letter-spacing:0.8px;margin-bottom:8px;font-weight:600;">SAVINGS RATE</div>
+            <div style="font-size:18px;font-weight:700;color:#0f172a;">${savingsRate}%</div>
+          </div>
+        </div>
+
+        <!-- Daily stats bar -->
+        <div style="margin:0 32px 24px;background:#0d1f3c;border-radius:10px;padding:14px 22px;display:flex;justify-content:space-between;align-items:center;">
+          <div style="display:flex;align-items:center;gap:14px;">
+            <span style="color:#94a3b8;font-size:12px;">Daily Average Spend (this month)</span>
+            <span style="color:white;font-size:15px;font-weight:700;">${rf(dailyAvg)}</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:14px;">
+            <span style="color:#94a3b8;font-size:12px;">Total Transactions</span>
+            <span style="color:white;font-size:15px;font-weight:700;">${moExp.length}</span>
+          </div>
+        </div>
+
+        <!-- Category Breakdown -->
+        <div style="margin:0 32px 24px;">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;">
+            <div style="width:4px;height:22px;background:#3b82f6;border-radius:2px;flex-shrink:0;"></div>
+            <div style="font-size:15px;font-weight:700;color:#0f172a;">Category Breakdown &nbsp;<span style="color:#64748b;font-weight:400;font-size:13px;">(This Month &mdash; Spend Only)</span></div>
+          </div>
+          ${catRowsHtml}
+        </div>
+
+        <!-- Monthly Summary -->
+        <div style="margin:0 32px 24px;">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;">
+            <div style="width:4px;height:22px;background:#3b82f6;border-radius:2px;flex-shrink:0;"></div>
+            <div style="font-size:15px;font-weight:700;color:#0f172a;">Monthly Summary</div>
+          </div>
+          <table style="width:100%;border-collapse:collapse;font-size:13px;">
+            <thead>
+              <tr style="background:#0d1f3c;color:white;">
+                <th style="padding:11px 14px;text-align:left;font-weight:600;">Month</th>
+                <th style="padding:11px 14px;text-align:left;font-weight:600;">Income</th>
+                <th style="padding:11px 14px;text-align:left;font-weight:600;">Spent</th>
+                <th style="padding:11px 14px;text-align:left;font-weight:600;">Net</th>
+                <th style="padding:11px 14px;text-align:left;font-weight:600;">Savings%</th>
+              </tr>
+            </thead>
+            <tbody>${monthKeys.length ? monthRowsHtml : '<tr><td colspan="5" style="padding:14px;color:#94a3b8;text-align:center;">No data yet</td></tr>'}</tbody>
+          </table>
+        </div>
+
+        <!-- Recent Transactions -->
+        <div style="margin:0 32px 0;">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;">
+            <div style="width:4px;height:22px;background:#3b82f6;border-radius:2px;flex-shrink:0;"></div>
+            <div style="font-size:15px;font-weight:700;color:#0f172a;">Recent Transactions &nbsp;<span style="color:#64748b;font-weight:400;font-size:13px;">(Last 15)</span></div>
+          </div>
+          <table style="width:100%;border-collapse:collapse;font-size:13px;">
+            <thead>
+              <tr style="border-bottom:2px solid #e2e8f0;">
+                <th style="padding:9px 14px;text-align:left;color:#94a3b8;font-weight:600;font-size:11px;">DATE</th>
+                <th style="padding:9px 14px;text-align:left;color:#94a3b8;font-weight:600;font-size:11px;">CATEGORY</th>
+                <th style="padding:9px 14px;text-align:left;color:#94a3b8;font-weight:600;font-size:11px;">DESCRIPTION</th>
+                <th style="padding:9px 14px;text-align:right;color:#94a3b8;font-weight:600;font-size:11px;">AMOUNT</th>
+              </tr>
+            </thead>
+            <tbody>${recent.length ? txnRowsHtml : '<tr><td colspan="4" style="padding:14px;color:#94a3b8;text-align:center;">No transactions yet</td></tr>'}</tbody>
+          </table>
+        </div>
+
+        <!-- Footer -->
+        <div style="background:#0d1f3c;margin-top:32px;padding:13px 32px;display:flex;justify-content:space-between;align-items:center;">
+          <span style="color:#94a3b8;font-size:11px;">Expense Tracker</span>
+          <span style="color:#94a3b8;font-size:11px;">Confidential Financial Report</span>
+          <span style="color:#94a3b8;font-size:11px;">Page 1</span>
+        </div>
+
+      </div>
+    </div>`;
+
+    // Render off-screen
+    const container = document.createElement('div');
+    container.style.cssText = 'position:fixed;left:-9999px;top:0;z-index:-1;';
+    container.innerHTML = html;
+    document.body.appendChild(container);
+
+    const canvas = await html2canvas(container.firstElementChild, {
+      scale: 2,
+      useCORS: true,
+      allowTaint: true,
+      backgroundColor: '#f1f5f9',
+      width: 794,
+      windowWidth: 794,
     });
-  } else {
-    pdf.setFontSize(10);
-    pdf.text('No expense data available', margin, yPos);
-  }
-  
-  yPos += 10;
-  
-  // Recent Transactions
-  checkPageBreak(60);
-  pdf.setFontSize(14);
-  pdf.setFont('helvetica', 'bold');
-  pdf.text('Recent Transactions (Last 10)', margin, yPos);
-  yPos += 10;
-  
-  const recentExpenses = allExpenses.slice(0, 10);
-  
-  if (recentExpenses.length > 0) {
-    pdf.setFontSize(9);
-    
-    recentExpenses.forEach((e, i) => {
-      checkPageBreak(12);
-      
-      const catName = e.categories?.name || getCatName(e.category_id) || 'N/A';
-      const dateFormatted = formatDate(e.date);
-      
-      pdf.setFont('helvetica', 'bold');
-      pdf.text(pdfFmt(e.amount), margin, yPos);
-      
-      pdf.setFont('helvetica', 'normal');
-      pdf.text(`${catName} - ${dateFormatted}`, margin + 35, yPos);
-      
-      if (e.description) {
-        pdf.setFontSize(8);
-        pdf.setTextColor(100, 100, 100);
-        pdf.text(e.description.substring(0, 60), margin + 5, yPos + 4);
-        pdf.setTextColor(0, 0, 0);
-        pdf.setFontSize(9);
-        yPos += 4;
-      }
-      
-      yPos += 8;
-    });
-  } else {
-    pdf.setFontSize(10);
-    pdf.text('No transactions yet', margin, yPos);
-  }
-  
-  // Footer on last page
-  pdf.setFontSize(8);
-  pdf.setTextColor(150, 150, 150);
-  pdf.text('Generated by Expense Tracker', pageWidth / 2, pageHeight - 10, { align: 'center' });
-  
-  // Save PDF
-  const fileName = `expense-report-${new Date().toISOString().slice(0, 10)}.pdf`;
-  pdf.save(fileName);
-  toast('PDF report downloaded!');
+
+    document.body.removeChild(container);
+
+    // Split canvas into A4 pages
+    const { jsPDF } = window.jspdf;
+    const pdf = new jsPDF('p', 'mm', 'a4');
+    const pageW = pdf.internal.pageSize.getWidth();
+    const pageH = pdf.internal.pageSize.getHeight();
+    const pxPerMm = canvas.width / pageW;
+    const pageHeightPx = Math.floor(pageH * pxPerMm);
+
+    let offsetY = 0;
+    let pageNum = 0;
+    while (offsetY < canvas.height) {
+      if (pageNum > 0) pdf.addPage();
+      const sliceH = Math.min(pageHeightPx, canvas.height - offsetY);
+      const pageCanvas = document.createElement('canvas');
+      pageCanvas.width = canvas.width;
+      pageCanvas.height = sliceH;
+      pageCanvas.getContext('2d').drawImage(canvas, 0, offsetY, canvas.width, sliceH, 0, 0, canvas.width, sliceH);
+      pdf.addImage(pageCanvas.toDataURL('image/jpeg', 0.95), 'JPEG', 0, 0, pageW, sliceH / pxPerMm);
+      offsetY += sliceH;
+      pageNum++;
+    }
+
+    pdf.save(`expense-report-${now.toISOString().slice(0, 10)}.pdf`);
+    toast('PDF report downloaded!');
   } catch (err) {
     console.error('PDF generation failed:', err);
     toast('Failed to generate PDF: ' + err.message, 'error');
