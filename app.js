@@ -2045,9 +2045,11 @@ async function updatePassword() {
 ════════════════════════════════════════ */
 async function downloadReport() {
   toast('Generating PDF report...', 'success');
-  
+
   const { jsPDF } = window.jspdf;
   const pdf = new jsPDF('p', 'mm', 'a4');
+  // jsPDF's built-in Helvetica doesn't support ₹ (U+20B9) — use Rs. instead
+  const pdfFmt = n => 'Rs. ' + Number(n).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   
   const pageWidth = pdf.internal.pageSize.getWidth();
   const pageHeight = pdf.internal.pageSize.getHeight();
@@ -2097,7 +2099,7 @@ async function downloadReport() {
     yPos += 6;
     pdf.text(`Email: ${currentUser?.email || 'N/A'}`, margin, yPos);
     yPos += 6;
-    pdf.text(`Monthly Income: ${fmt(userIncome)}`, margin, yPos);
+    pdf.text(`Monthly Income: ${pdfFmt(userIncome)}`, margin, yPos);
     yPos += 10;
   }
   
@@ -2121,9 +2123,9 @@ async function downloadReport() {
   
   pdf.setFontSize(10);
   pdf.setFont('helvetica', 'normal');
-  pdf.text(`Total Expenses: ${fmt(total)}`, margin + 5, yPos + 8);
-  pdf.text(`Monthly Spend: ${fmt(moTotal)}`, margin + 5, yPos + 16);
-  pdf.text(`Daily Average: ${fmt(daily)}`, margin + 5, yPos + 24);
+  pdf.text(`Total Expenses: ${pdfFmt(total)}`, margin + 5, yPos + 8);
+  pdf.text(`Monthly Spend: ${pdfFmt(moTotal)}`, margin + 5, yPos + 16);
+  pdf.text(`Daily Average: ${pdfFmt(daily)}`, margin + 5, yPos + 24);
   yPos += 40;
   
   // Category Breakdown
@@ -2155,7 +2157,7 @@ async function downloadReport() {
       pdf.rect(margin, yPos - 4, barWidth, 6, 'F');
       
       pdf.text(cat, margin, yPos);
-      pdf.text(`${fmt(amount)} (${percentage}%)`, pageWidth - margin - 50, yPos, { align: 'right' });
+      pdf.text(`${pdfFmt(amount)} (${percentage}%)`, pageWidth - margin - 50, yPos, { align: 'right' });
       yPos += 8;
     });
   } else {
@@ -2225,13 +2227,13 @@ async function downloadReport() {
       pdf.setTextColor(0, 0, 0);
       pdf.text(label, margin + 2, yPos);
       pdf.setTextColor(52, 211, 153);
-      pdf.text(fmt(received), margin + colWidth + 2, yPos);
+      pdf.text(pdfFmt(received), margin + colWidth + 2, yPos);
       pdf.setTextColor(239, 68, 68);
-      pdf.text(fmt(spent), margin + 2*colWidth + 2, yPos);
-      
+      pdf.text(pdfFmt(spent), margin + 2*colWidth + 2, yPos);
+
       // Color code net balance
       pdf.setTextColor(net >= 0 ? 52 : 239, net >= 0 ? 211 : 68, net >= 0 ? 153 : 68);
-      pdf.text(fmt(net), margin + 3*colWidth + 2, yPos);
+      pdf.text(pdfFmt(net), margin + 3*colWidth + 2, yPos);
       pdf.setTextColor(0, 0, 0);
       pdf.text(sr, margin + 4*colWidth + 2, yPos);
       
@@ -2263,7 +2265,7 @@ async function downloadReport() {
       const dateFormatted = formatDate(e.date);
       
       pdf.setFont('helvetica', 'bold');
-      pdf.text(fmt(e.amount), margin, yPos);
+      pdf.text(pdfFmt(e.amount), margin, yPos);
       
       pdf.setFont('helvetica', 'normal');
       pdf.text(`${catName} • ${dateFormatted}`, margin + 35, yPos);
