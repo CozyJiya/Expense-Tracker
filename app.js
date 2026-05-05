@@ -135,8 +135,25 @@ async function signIn() {
   }
 
   // REAL MODE - Use Supabase
-  const email = username.includes('@') ? username : `${username}@expensetracker.local`;
-  const { error } = await db.auth.signInWithPassword({ email, password });
+  let loginEmail = username;
+
+  // If not an email, look up the real email by username from profiles table
+  if (!username.includes('@')) {
+    const { data: profileRow } = await db
+      .from('profiles')
+      .select('email')
+      .eq('username', username)
+      .maybeSingle();
+
+    if (!profileRow || !profileRow.email) {
+      btn.disabled = false; btn.textContent = 'Sign In';
+      toast('Username not found. Try signing in with your email instead.', 'error');
+      return;
+    }
+    loginEmail = profileRow.email;
+  }
+
+  const { error } = await db.auth.signInWithPassword({ email: loginEmail, password });
 
   btn.disabled = false; btn.textContent = 'Sign In';
   if (error) { toast(error.message, 'error'); return; }
@@ -165,9 +182,38 @@ async function signUp() {
   }
 
   // REAL MODE - Use Supabase
-  const { error } = await db.auth.signUp({ email, password });
+
+  // 1. Enforce username uniqueness before creating the account
+  const { data: existingUser } = await db
+    .from('profiles')
+    .select('id')
+    .eq('username', username)
+    .maybeSingle();
+
+  if (existingUser) {
+    btn.disabled = false; btn.textContent = 'Create Account';
+    toast('Username already taken. Please choose another.', 'error');
+    return;
+  }
+
+  // 2. Create the auth account, storing username in metadata
+  const { data: signUpData, error } = await db.auth.signUp({
+    email,
+    password,
+    options: { data: { username } }
+  });
   btn.disabled = false; btn.textContent = 'Create Account';
   if (error) { toast(error.message, 'error'); return; }
+
+  // 3. Write username + email into profiles so login-by-username works
+  if (signUpData?.user) {
+    await db.from('profiles').upsert({
+      id: signUpData.user.id,
+      username,
+      email
+    }, { onConflict: 'id' });
+  }
+
   toast('Account created! Please sign in.');
   showLogin();
 }
@@ -1475,22 +1521,40 @@ async function loadProfile() {
   }
   
   const { data } = await db.from('profiles').select('*').eq('id', currentUser.id).single();
-  if (!data) return;
-  userProfile = data;
-  $('p-firstname').value  = data.first_name   || '';
-  $('p-middlename').value = data.middle_name  || '';
-  $('p-surname').value    = data.surname       || '';
-  $('p-dob').value        = data.birth_date    || '';
-  $('p-desc').value       = data.description  || '';
-  $('p-job').value        = data.job           || '';
-  $('p-location').value   = data.location      || '';
-  $('p-address').value    = data.address       || '';
-  $('p-pan').value        = data.pan_number    || '';
-  $('p-income').value     = data.monthly_income || '';
-  $('a-username').value   = data.username      || '';
-  $('a-phone').value      = data.phone_number  || '';
-  userIncome = parseFloat(data.monthly_income) || 50000;
-  updatePhoneVerificationStatus(data.phone_verified || false);
+
+  // Build a base profile even if the row doesn't exist yet
+  const profileData = data || {};
+
+  // Fall back to user_metadata username if profiles row has none
+  const metaUsername = currentUser.user_metadata?.username || '';
+  const resolvedUsername = profileData.username || metaUsername;
+
+  // Auto-save username+email to profiles if missing (fixes accounts created before this fix)
+  if (!profileData.username && resolvedUsername) {
+    await db.from('profiles').upsert({
+      id: currentUser.id,
+      username: resolvedUsername,
+      email: currentUser.email
+    }, { onConflict: 'id' });
+  }
+
+  profileData.username = resolvedUsername;
+  userProfile = profileData;
+
+  $('p-firstname').value  = profileData.first_name   || '';
+  $('p-middlename').value = profileData.middle_name  || '';
+  $('p-surname').value    = profileData.surname       || '';
+  $('p-dob').value        = profileData.birth_date    || '';
+  $('p-desc').value       = profileData.description  || '';
+  $('p-job').value        = profileData.job           || '';
+  $('p-location').value   = profileData.location      || '';
+  $('p-address').value    = profileData.address       || '';
+  $('p-pan').value        = profileData.pan_number    || '';
+  $('p-income').value     = profileData.monthly_income || '';
+  $('a-username').value   = resolvedUsername;
+  $('a-phone').value      = profileData.phone_number  || '';
+  userIncome = parseFloat(profileData.monthly_income) || 50000;
+  updatePhoneVerificationStatus(profileData.phone_verified || false);
   calcAge();
   updatePfpInitials();
   loadPfp();
@@ -1705,25 +1769,46 @@ async function confirmEditField() {
 
 async function updateUsername(newUsername) {
   if (!userProfile) return;
-  
-  userProfile.username = newUsername;
-  
+
   if (DEMO_MODE) {
+    userProfile.username = newUsername;
     localStorage.setItem(`profile_${currentUser?.id}`, JSON.stringify(userProfile));
     $('a-username').value = newUsername;
     toast('Username updated successfully!');
     return;
   }
-  
-  const { error } = await db.from('profiles')
-    .update({ username: newUsername, updated_at: new Date().toISOString() })
+
+  // 1. Check the new username isn't already taken by another user
+  const { data: existing } = await db
+    .from('profiles')
+    .select('id')
+    .eq('username', newUsername)
+    .neq('id', currentUser.id)
+    .maybeSingle();
+
+  if (existing) {
+    toast('Username already taken. Please choose another.', 'error');
+    return;
+  }
+
+  // 2. Update profiles table — also ensure email is saved (needed for login lookup)
+  const { error: profileError } = await db.from('profiles')
+    .update({
+      username: newUsername,
+      email: currentUser.email,   // always keep email in sync so login-by-username works
+      updated_at: new Date().toISOString()
+    })
     .eq('id', currentUser.id);
-  
-  if (error) {
+
+  if (profileError) {
     toast('Failed to update username', 'error');
     return;
   }
-  
+
+  // 3. Sync to user_metadata so login-by-username works with the new username
+  await db.auth.updateUser({ data: { username: newUsername } });
+
+  userProfile.username = newUsername;
   $('a-username').value = newUsername;
   toast('Username updated successfully!');
 }
