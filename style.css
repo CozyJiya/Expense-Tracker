@@ -1502,28 +1502,254 @@ input[type="date"] { color-scheme: dark; }
 }
 
 /* ═══════════════════════════════
-   RESPONSIVE
+   RESPONSIVE — TABLET
 ═══════════════════════════════ */
 @media (max-width: 960px) {
   .stats-row { grid-template-columns: 1fr 1fr; }
   .reports-grid { grid-template-columns: 1fr; }
+  .settings-sidebar { width: 200px; }
+  .profile-row.three-col { grid-template-columns: 1fr 1fr; }
 }
 
+/* ═══════════════════════════════
+   RESPONSIVE — MOBILE (≤640px)
+═══════════════════════════════ */
 @media (max-width: 640px) {
-  .stats-row { grid-template-columns: 1fr; }
-  .main-area { margin-left: 0; }
+
+  /* ── Layout ── */
+  .main-area {
+    margin-left: 0;
+    padding-bottom: 0;
+  }
+
+  .top-header {
+    padding: 14px 16px 12px;
+  }
+
+  .view {
+    padding: 16px 14px 100px;
+  }
+
+  /* ── Bottom nav bar ── */
   .sidebar {
     bottom: 0; top: auto;
-    width: 100%; height: 56px;
+    width: 100%;
+    height: 60px;
     flex-direction: row;
-    padding: 0 16px;
+    padding: 0 8px;
     border-right: none;
     border-top: 1px solid var(--border);
+    z-index: 200;
   }
-  .sidebar-nav { flex-direction: row; gap: 0; }
-  .nav-btn { border-left: none; border-top: 3px solid transparent; height: 56px; width: 56px; }
-  .nav-btn.active { border-left: none; border-top-color: var(--white); }
-  .view { padding-bottom: 80px; }
+
+  .sidebar-nav {
+    flex-direction: row;
+    gap: 0;
+    flex: 1;
+    justify-content: space-around;
+  }
+
+  .sidebar-bottom {
+    flex-direction: row;
+    align-items: center;
+    padding-right: 4px;
+  }
+
+  .nav-btn {
+    border-left: none;
+    border-top: 3px solid transparent;
+    height: 60px;
+    width: 56px;
+    flex-shrink: 0;
+  }
+
+  .nav-btn.active {
+    border-left: none;
+    border-top-color: var(--white);
+    background: rgba(78,122,177,0.08);
+  }
+
+  .nav-divider { display: none; }
+
+  .avatar-btn {
+    width: 32px; height: 32px;
+    font-size: 13px;
+  }
+
+  /* ── Login / Signup ── */
+  .login-card {
+    padding: 32px 20px;
+    border-radius: 12px;
+    margin: 16px;
+  }
+
+  .login-title { font-size: 20px; }
+
+  /* ── Stats ── */
+  .stats-row {
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    margin-bottom: 14px;
+  }
+
+  .stats-row .stat-card:first-child {
+    grid-column: 1 / -1;
+  }
+
+  .stat-card {
+    padding: 16px 16px 18px;
+  }
+
+  .stat-value { font-size: 22px; }
+
+  /* ── Trend chart ── */
+  .trend-stats {
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+
+  .trend-value { font-size: 22px; }
+
+  /* ── Expense list ── */
+  .expense-list { max-height: none; }
+
+  .expense-amount { font-size: 16px; }
+
+  /* ── Toasts — sit above bottom nav ── */
+  #toasts {
+    bottom: 72px;
+    right: 12px;
+    left: 12px;
+  }
+
+  .toast { min-width: unset; width: 100%; }
+
+  /* ── Add expense modal — bottom sheet ── */
+  #add-expense-modal {
+    align-items: flex-end;
+  }
+
+  .add-expense-dialog {
+    min-width: unset;
+    width: 100%;
+    max-width: 100%;
+    border-radius: 20px 20px 0 0;
+    padding: 24px 20px 32px;
+    max-height: 92vh;
+  }
+
+  /* ── Delete / edit modals — full width with margin ── */
+  .delete-dialog {
+    min-width: unset;
+    width: calc(100% - 32px);
+    max-width: 100%;
+    padding: 24px 20px;
+  }
+
+  .edit-account-dialog {
+    min-width: unset;
+    width: calc(100% - 32px);
+    max-width: 100%;
+    padding: 24px 20px;
+  }
+
+  /* ── OTP modal ── */
+  .otp-dialog {
+    min-width: unset;
+    width: calc(100% - 32px);
+    max-width: 100%;
+    padding: 24px 16px;
+  }
+
+  .otp-input { width: 40px; height: 50px; font-size: 20px; gap: 6px; }
+  .otp-input-group { gap: 6px; }
+
+  /* ── Settings — stack vertically ── */
+  .settings-view.active {
+    flex-direction: column;
+  }
+
+  .settings-sidebar {
+    width: 100%;
+    padding: 16px 14px 0;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .settings-heading { margin-bottom: 12px; font-size: 16px; }
+
+  .settings-nav {
+    flex-direction: row;
+    overflow-x: auto;
+    gap: 4px;
+    padding-bottom: 12px;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .settings-nav li { flex-shrink: 0; }
+
+  .settings-nav-btn {
+    padding: 8px 14px;
+    font-size: 13px;
+    white-space: nowrap;
+    border-radius: 20px;
+    background: rgba(78,122,177,0.08);
+  }
+
+  .settings-nav-btn.active {
+    background: var(--accent-btn);
+    color: var(--white);
+  }
+
+  .settings-nav-btn.signout-btn {
+    margin-top: 0;
+    background: rgba(239,68,68,0.08);
+  }
+
+  .settings-content {
+    padding: 20px 14px;
+  }
+
+  .settings-content-title { font-size: 17px; }
+
+  /* ── Profile form ── */
+  .profile-row.three-col,
+  .profile-row.two-col {
+    grid-template-columns: 1fr;
+  }
+
+  .pfp-section {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 14px;
+  }
+
+  .pfp-actions { flex-direction: row; }
+
+  /* ── Reports ── */
+  .view-reports .page-title { font-size: 17px; margin-bottom: 16px; }
+
+  .cat-table-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .btn-download { width: 100%; justify-content: center; }
+
+  /* ── Input with edit button ── */
+  .input-with-button { flex-direction: row; gap: 8px; }
+  .btn-edit-field { padding: 10px 14px; font-size: 12px; }
+}
+
+/* ═══════════════════════════════
+   RESPONSIVE — VERY SMALL (≤380px)
+═══════════════════════════════ */
+@media (max-width: 380px) {
+  .stats-row { grid-template-columns: 1fr; }
+  .stats-row .stat-card:first-child { grid-column: auto; }
+  .otp-input { width: 36px; height: 44px; font-size: 18px; }
+  .otp-input-group { gap: 4px; }
+  .trend-stats { gap: 8px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
