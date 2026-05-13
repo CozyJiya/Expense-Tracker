@@ -2508,9 +2508,10 @@ async function confirmDeleteAccount() {
   }
 
   try {
-    await db.from('expenses').delete().eq('user_id', currentUser.id);
-    await db.from('profiles').delete().eq('id', currentUser.id);
-    try { await db.rpc('delete_user'); } catch (_) {}
+    // delete_user() atomically removes expenses, profile, and auth.users row
+    const { error: deleteError } = await db.rpc('delete_user');
+    if (deleteError) throw deleteError;
+
     await db.auth.signOut();
     currentUser = null;
     allExpenses = [];
@@ -2520,7 +2521,7 @@ async function confirmDeleteAccount() {
   } catch (err) {
     btn.disabled = false;
     btn.textContent = 'Delete My Account';
-    toast('Failed to delete account', 'error');
+    toast('Failed to delete account: ' + (err.message || 'Unknown error'), 'error');
   }
 }
 
