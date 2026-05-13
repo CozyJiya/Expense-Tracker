@@ -102,9 +102,8 @@ async function showApp() {
   }
   // prefill account email
   $('a-email').value = email;
-  await Promise.all([loadCategories(), loadExpenses()]);
-  loadProfile();
-  
+  await Promise.all([loadCategories(), loadExpenses(), loadProfile()]);
+
   // Check and add monthly income automatically
   await checkAndAddMonthlyIncome();
   
@@ -217,14 +216,22 @@ async function signUp() {
   }
 
   // 2. Create the auth account — store username + email in metadata
-  //    (profiles row is written on first login, after email confirmation)
-  const { error } = await db.auth.signUp({
+  const { data: signUpData, error } = await db.auth.signUp({
     email,
     password,
     options: { data: { username, email } }
   });
   btn.disabled = false; btn.textContent = 'Create Account';
   if (error) { toast(error.message, 'error'); return; }
+
+  // 3. Insert the profile row immediately so it exists before first login
+  if (signUpData?.user) {
+    await db.from('profiles').upsert({
+      id: signUpData.user.id,
+      username,
+      email,
+    }, { onConflict: 'id' });
+  }
 
   toast('Account created! Please sign in.');
   showLogin();
@@ -611,21 +618,23 @@ async function addExpense() {
       category_id: selectedCat,
       date,
       description: desc || null,
-    });
+    }).select('*, categories(name)').single();
 
     btn.disabled = false;
-    
-    if (error) { 
+
+    if (error) {
       console.error('Supabase error:', error);
-      toast('Failed to add expense: ' + error.message, 'error'); 
+      toast('Failed to add expense: ' + error.message, 'error');
       btn.textContent = 'Add Expense';
-      return; 
+      return;
     }
 
+    // Prepend locally — no need to reload all expenses from DB
+    allExpenses.unshift(data);
     toast('Expense added!');
     closeAddExpenseModal();
     cancelEdit();
-    await loadExpenses();
+    renderExpenseList();
     updateStats();
   }
 }
