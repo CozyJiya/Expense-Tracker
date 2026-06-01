@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>Expense Tracker</title>
   <link rel="stylesheet" href="style.css" />
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
@@ -118,7 +118,7 @@
           </div>
           <div class="trend-period">Last 180 days</div>
         </div>
-        <canvas id="chart-trend" height="140"></canvas>
+        <canvas id="chart-trend" height="90"></canvas>
         <div class="trend-stats">
           <div class="trend-stat-item">
             <div class="trend-stat-label">THIS MONTH</div>
@@ -152,13 +152,13 @@
         <!-- Bar chart -->
         <div class="card chart-card">
           <h3 class="chart-title" id="bar-chart-title">Daily Spending (This Week)</h3>
-          <canvas id="chart-bar" height="220"></canvas>
+          <canvas id="chart-bar" height="120"></canvas>
         </div>
         <!-- Donut chart -->
         <div class="card chart-card">
           <h3 class="chart-title" id="donut-chart-title">Category Breakdown (This Month)</h3>
           <div class="donut-wrap">
-            <canvas id="chart-donut" height="200"></canvas>
+            <canvas id="chart-donut" height="120"></canvas>
           </div>
           <div class="donut-legend" id="donut-legend"></div>
           <div class="donut-total">
