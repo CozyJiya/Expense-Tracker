@@ -3,19 +3,561 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-  <title>Expense Tracker</title>
+  <title>TrackWise — Smart Expense Tracker</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Sora:wght@700;800&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="style.css" />
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+
+<style>
+/* ── Landing nav: user state ── */
+.lp-user-nav {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.lp-user-nav.hidden { display: none !important; }
+.lp-btn-nav.hidden  { display: none !important; }
+
+.lp-btn-dashboard {
+  background: rgba(78,122,177,0.18);
+  border: 1px solid rgba(78,122,177,0.4);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+  padding: 8px 18px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.18s;
+}
+.lp-btn-dashboard:hover {
+  background: rgba(78,122,177,0.35);
+}
+
+/* PFP avatar circle */
+.lp-pfp-wrap {
+  position: relative;
+}
+.lp-pfp-avatar {
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #4e7ab1 0%, #b987af 100%);
+  color: #fff;
+  font-size: 15px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  border: 2px solid rgba(255,255,255,0.15);
+  transition: border-color 0.18s, transform 0.15s;
+  user-select: none;
+  flex-shrink: 0;
+}
+.lp-pfp-avatar:hover {
+  border-color: rgba(185,135,175,0.7);
+  transform: scale(1.06);
+}
+
+/* Dropdown */
+.lp-pfp-dropdown {
+  position: absolute;
+  top: calc(100% + 10px);
+  right: 0;
+  background: #0d1f3c;
+  border: 1px solid rgba(78,122,177,0.3);
+  border-radius: 10px;
+  min-width: 160px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.45);
+  z-index: 9999;
+  overflow: hidden;
+  animation: dropIn 0.15s ease;
+}
+.lp-pfp-dropdown.hidden { display: none; }
+
+@keyframes dropIn {
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.lp-pfp-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 11px 16px;
+  background: none;
+  border: none;
+  color: #c8d8ee;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.15s, color 0.15s;
+}
+.lp-pfp-item:hover {
+  background: rgba(78,122,177,0.18);
+  color: #fff;
+}
+.lp-pfp-item svg { flex-shrink: 0; opacity: 0.8; }
+.lp-pfp-signout { color: #f87171; }
+.lp-pfp-signout:hover { background: rgba(239,68,68,0.12); color: #ef4444; }
+.lp-pfp-divider { height: 1px; background: rgba(78,122,177,0.2); margin: 2px 0; }
+
+/* ── Reviews layout ── */
+.lp-reviews-empty {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 56px 20px;
+  text-align: center;
+  color: rgba(200,216,238,0.55);
+  gap: 10px;
+}
+.lp-reviews-empty-icon { font-size: 36px; line-height: 1; }
+.lp-reviews-empty-title { font-size: 18px; font-weight: 600; color: rgba(200,216,238,0.7); margin: 0; }
+.lp-reviews-empty-sub   { font-size: 14px; margin: 0; }
+
+/* 1 review: center it */
+.lp-testi-grid.lp-reviews-single {
+  display: flex;
+  justify-content: center;
+}
+.lp-reviews-single .lp-testi {
+  max-width: 520px;
+  width: 100%;
+}
+
+/* 2 reviews: two columns, centered */
+.lp-testi-grid.lp-reviews-pair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 480px));
+  justify-content: center;
+  gap: 24px;
+}
+</style>
 </head>
 <body>
 
 <!-- ═══════════════════════════════════════
+     LANDING PAGE
+═══════════════════════════════════════ -->
+<div id="page-landing">
+
+  <!-- NAV -->
+  <nav class="lp-nav">
+    <a href="#" class="lp-logo">
+      <span class="lp-logo-dot"></span>TrackWise
+    </a>
+    <div class="lp-nav-links">
+      <a href="#lp-features">Features</a>
+      <a href="#lp-how">How It Works</a>
+      <a href="#lp-pricing">Pricing</a>
+      <a href="#lp-contact">Contact</a>
+      <!-- Signed-out: show Sign In button -->
+      <button class="lp-btn-nav" id="lp-btn-launch" data-action="login">Sign In →</button>
+      <!-- Signed-in: show Dashboard + pfp dropdown (hidden by default) -->
+      <div class="lp-user-nav hidden" id="lp-user-nav">
+        <button class="lp-btn-nav lp-btn-dashboard" id="lp-btn-dashboard">Dashboard</button>
+        <div class="lp-pfp-wrap" id="lp-pfp-wrap">
+          <div class="lp-pfp-avatar" id="lp-pfp-avatar">A</div>
+          <div class="lp-pfp-dropdown hidden" id="lp-pfp-dropdown">
+            <button class="lp-pfp-item" id="lp-pfp-account">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+              Account
+            </button>
+            <div class="lp-pfp-divider"></div>
+            <button class="lp-pfp-item lp-pfp-signout" id="lp-pfp-signout">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+              Sign Out
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </nav>
+
+  <!-- HERO -->
+  <section class="lp-hero" id="lp-home">
+    <div class="lp-hero-glow"></div>
+    <div class="lp-hero-glow2"></div>
+    <div class="lp-hero-inner">
+
+      <!-- Left copy -->
+      <div class="lp-hero-copy">
+        <div class="lp-label-badge"><span class="lp-pulse-dot"></span>Smart Personal Finance</div>
+        <h1 class="lp-h1">Every Rupee,<br /><em>Perfectly</em> Tracked.</h1>
+        <p class="lp-hero-sub">TrackWise gives you a real-time picture of your spending, savings, and trends — with beautiful charts, smart categories, and PDF reports you can actually use.</p>
+        <div class="lp-hero-btns">
+          <button class="lp-btn-primary" id="lp-btn-getstarted">Get Started Free</button>
+          <a href="#lp-features" class="lp-btn-outline">Explore Features</a>
+        </div>
+        <div class="lp-hero-stats">
+          <div class="lp-hstat"><span class="lp-hstat-num">₹0</span><span class="lp-hstat-lbl">Always Free Plan</span></div>
+          <div class="lp-hstat"><span class="lp-hstat-num">5 sec</span><span class="lp-hstat-lbl">To log a transaction</span></div>
+          <div class="lp-hstat"><span class="lp-hstat-num">100%</span><span class="lp-hstat-lbl">Your data, always</span></div>
+        </div>
+      </div>
+
+      <!-- Right: mini app preview -->
+      <div class="lp-preview" aria-hidden="true">
+        <div class="lp-preview-bar">
+          <span class="lp-dot lp-dot-r"></span>
+          <span class="lp-dot lp-dot-y"></span>
+          <span class="lp-dot lp-dot-g"></span>
+        </div>
+        <div class="lp-preview-body">
+          <div class="lp-mini-stats">
+            <div class="lp-ms"><div class="lp-ms-l">Net Balance</div><div class="lp-ms-v lp-green">₹18,400</div></div>
+            <div class="lp-ms"><div class="lp-ms-l">Monthly Net</div><div class="lp-ms-v lp-red">−₹6,230</div></div>
+            <div class="lp-ms"><div class="lp-ms-l">Daily Avg</div><div class="lp-ms-v">₹207</div></div>
+          </div>
+          <div class="lp-mini-chart-card">
+            <div class="lp-mini-chart-title">Daily Spending — This Week</div>
+            <div class="lp-mini-bars">
+              <div class="lp-bar" style="height:35%"></div>
+              <div class="lp-bar" style="height:60%"></div>
+              <div class="lp-bar" style="height:25%"></div>
+              <div class="lp-bar lp-bar-active" style="height:82%"></div>
+              <div class="lp-bar" style="height:50%"></div>
+              <div class="lp-bar" style="height:44%"></div>
+              <div class="lp-bar" style="height:58%"></div>
+            </div>
+          </div>
+          <div class="lp-mini-txns">
+            <div class="lp-txn">
+              <div class="lp-txn-left">
+                <div class="lp-txn-icon" style="background:rgba(52,211,153,0.12)">🛒</div>
+                <div><div class="lp-txn-name">Groceries</div><div class="lp-txn-cat">Food</div></div>
+              </div>
+              <div class="lp-txn-amt lp-red">−₹840</div>
+            </div>
+            <div class="lp-txn">
+              <div class="lp-txn-left">
+                <div class="lp-txn-icon" style="background:rgba(78,122,177,0.15)">💼</div>
+                <div><div class="lp-txn-name">Salary</div><div class="lp-txn-cat">Income</div></div>
+              </div>
+              <div class="lp-txn-amt lp-green">+₹35,000</div>
+            </div>
+            <div class="lp-txn">
+              <div class="lp-txn-left">
+                <div class="lp-txn-icon" style="background:rgba(206,181,212,0.12)">🚌</div>
+                <div><div class="lp-txn-name">Transport</div><div class="lp-txn-cat">Travel</div></div>
+              </div>
+              <div class="lp-txn-amt lp-red">−₹120</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- FEATURES -->
+  <section class="lp-section lp-section-alt" id="lp-features">
+    <div class="lp-container">
+      <div class="lp-section-label lp-center">What's Inside</div>
+      <h2 class="lp-h2 lp-center">Built for how you actually spend</h2>
+      <p class="lp-section-sub lp-center">No spreadsheets. No confusing dashboards. Just a clean, fast tool that stays out of your way.</p>
+      <div class="lp-feat-grid">
+        <div class="lp-feat-card lp-reveal">
+          <div class="lp-feat-icon">📊</div>
+          <div class="lp-feat-title">Live Dashboard</div>
+          <p class="lp-feat-desc">Net balance, monthly net, and daily average the moment you open the app. Always up to date.</p>
+        </div>
+        <div class="lp-feat-card lp-reveal">
+          <div class="lp-feat-icon">📈</div>
+          <div class="lp-feat-title">Visual Charts</div>
+          <p class="lp-feat-desc">Bar charts for daily and monthly trends, plus donut charts for category breakdowns. See where your money goes.</p>
+        </div>
+        <div class="lp-feat-card lp-reveal">
+          <div class="lp-feat-icon">🏷️</div>
+          <div class="lp-feat-title">Smart Categories</div>
+          <p class="lp-feat-desc">Tag transactions instantly — Food, Travel, Entertainment, Health, and more. One tap, always organised.</p>
+        </div>
+        <div class="lp-feat-card lp-reveal">
+          <div class="lp-feat-icon">📄</div>
+          <div class="lp-feat-title">PDF Reports</div>
+          <p class="lp-feat-desc">Export beautiful monthly or yearly reports as PDF — with inline bar charts, totals, and full transaction history.</p>
+        </div>
+        <div class="lp-feat-card lp-reveal">
+          <div class="lp-feat-icon">🔐</div>
+          <div class="lp-feat-title">Secure Auth</div>
+          <p class="lp-feat-desc">Email and password sign-in. Your data lives in your own Supabase instance, protected by row-level security.</p>
+        </div>
+        <div class="lp-feat-card lp-reveal">
+          <div class="lp-feat-icon">📱</div>
+          <div class="lp-feat-title">Mobile-First</div>
+          <p class="lp-feat-desc">Fully responsive from 320px to 4K. The bottom nav adapts so your thumb always reaches everything.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- HOW IT WORKS -->
+  <section class="lp-section" id="lp-how">
+    <div class="lp-container">
+      <div class="lp-section-label lp-center">Simple Process</div>
+      <h2 class="lp-h2 lp-center">Up and running in minutes</h2>
+      <p class="lp-section-sub lp-center">No setup wizards. No migrations. You're tracking expenses before your chai cools down.</p>
+      <div class="lp-steps">
+        <div class="lp-step lp-reveal">
+          <div class="lp-step-num">STEP 01</div>
+          <div class="lp-step-circle">👤</div>
+          <div class="lp-step-title">Create Your Account</div>
+          <p class="lp-step-desc">Sign up with your email. Your private dashboard is ready instantly.</p>
+        </div>
+        <div class="lp-step lp-reveal">
+          <div class="lp-step-num">STEP 02</div>
+          <div class="lp-step-circle">➕</div>
+          <div class="lp-step-title">Log Transactions</div>
+          <p class="lp-step-desc">Add income or expenses in under 5 seconds. Pick a category, done.</p>
+        </div>
+        <div class="lp-step lp-reveal">
+          <div class="lp-step-num">STEP 03</div>
+          <div class="lp-step-circle">📊</div>
+          <div class="lp-step-title">See Your Picture</div>
+          <p class="lp-step-desc">Charts and stats update instantly. Your financial story, live.</p>
+        </div>
+        <div class="lp-step lp-reveal">
+          <div class="lp-step-num">STEP 04</div>
+          <div class="lp-step-circle">📄</div>
+          <div class="lp-step-title">Export Reports</div>
+          <p class="lp-step-desc">Download a clean PDF anytime. Share it or save it for taxes.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- PRICING -->
+  <section class="lp-section lp-section-alt" id="lp-pricing">
+    <div class="lp-container">
+      <div class="lp-section-label lp-center">Pricing</div>
+      <h2 class="lp-h2 lp-center">Honest pricing. No surprises.</h2>
+      <p class="lp-section-sub lp-center">Start free forever. Upgrade only when you need more power.</p>
+      <div class="lp-pricing-grid">
+
+        <div class="lp-plan lp-reveal">
+          <div class="lp-plan-name">Free</div>
+          <div class="lp-plan-price"><sup>₹</sup>0<span>/month</span></div>
+          <p class="lp-plan-desc">For individuals getting started with personal finance tracking.</p>
+          <div class="lp-plan-divider"></div>
+          <ul class="lp-plan-feats">
+            <li>Unlimited transactions</li>
+            <li>Live dashboard &amp; stats</li>
+            <li>Daily &amp; monthly bar charts</li>
+            <li>Category breakdown donut chart</li>
+            <li>Expense history table</li>
+            <li class="lp-na">PDF report export</li>
+            <li class="lp-na">Yearly trend analysis</li>
+          </ul>
+          <button class="lp-plan-btn lp-plan-btn-outline" onclick="goToSignup()">Get Started Free</button>
+        </div>
+
+        <div class="lp-plan lp-plan-featured lp-reveal">
+          <div class="lp-plan-badge">Most Popular</div>
+          <div class="lp-plan-name" style="margin-top:4px">Pro</div>
+          <div class="lp-plan-price"><sup>₹</sup>149<span>/month</span></div>
+          <p class="lp-plan-desc">For individuals who want full control and shareable reports.</p>
+          <div class="lp-plan-divider"></div>
+          <ul class="lp-plan-feats">
+            <li>Everything in Free</li>
+            <li>PDF export (monthly &amp; yearly)</li>
+            <li>Inline SVG charts in PDFs</li>
+            <li>Advanced category insights</li>
+            <li>Data export (CSV)</li>
+            <li class="lp-na">Team accounts</li>
+            <li class="lp-na">Custom categories</li>
+          </ul>
+          <a href="#lp-contact" class="lp-plan-btn lp-plan-btn-fill">Get Pro Access</a>
+        </div>
+
+        <div class="lp-plan lp-reveal">
+          <div class="lp-plan-name">Team</div>
+          <div class="lp-plan-price"><sup>₹</sup>499<span>/month</span></div>
+          <p class="lp-plan-desc">For small businesses and households managing shared finances.</p>
+          <div class="lp-plan-divider"></div>
+          <ul class="lp-plan-feats">
+            <li>Everything in Pro</li>
+            <li>Up to 5 team accounts</li>
+            <li>Custom categories</li>
+            <li>Consolidated team reports</li>
+            <li>Priority email support</li>
+            <li>Early feature access</li>
+            <li>Dedicated onboarding call</li>
+          </ul>
+          <a href="#lp-contact" class="lp-plan-btn lp-plan-btn-outline">Contact for Team</a>
+        </div>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- TESTIMONIALS / REVIEWS -->
+  <section class="lp-section" id="lp-testimonials">
+    <div class="lp-container">
+      <div class="lp-section-label lp-center">Early Feedback</div>
+      <h2 class="lp-h2 lp-center">What our users are saying</h2>
+      <p class="lp-section-sub lp-center">Real reviews from people tracking their finances with TrackWise.</p>
+      
+      <!-- Add Review Button -->
+      <div class="lp-add-review-wrap">
+        <button class="lp-btn-add-review" id="btn-add-review">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="12" y1="5" x2="12" y2="19"></line>
+            <line x1="5" y1="12" x2="19" y2="12"></line>
+          </svg>
+          Add Your Review
+        </button>
+      </div>
+
+      <!-- Reviews Grid -->
+      <div class="lp-testi-grid" id="reviews-grid">
+        <div class="lp-reviews-empty">
+          <div class="lp-reviews-empty-icon">💬</div>
+          <p>Loading reviews...</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- CTA BAND -->
+  <div class="lp-cta-band">
+    <div class="lp-section-label lp-center" style="margin-bottom:14px">Get Started Today</div>
+    <h2 class="lp-h2 lp-center">Your finances deserve a better view.</h2>
+    <p class="lp-cta-sub">Join hundreds of people already tracking smarter with TrackWise.</p>
+    <button class="lp-btn-primary" onclick="goToSignup()">Start Tracking Free →</button>
+  </div>
+
+  <!-- CONTACT -->
+  <section class="lp-section lp-section-alt" id="lp-contact">
+    <div class="lp-container lp-contact-wrap">
+      <div class="lp-section-label lp-center">Get In Touch</div>
+      <h2 class="lp-h2 lp-center">Send us a message</h2>
+      <p class="lp-section-sub lp-center">Questions about features, pricing, or integration? We reply within 24 hours.</p>
+      <!--
+        EMAIL SETUP:
+        1. Go to https://formspree.io → sign up free
+        2. Create a form → copy your endpoint (e.g. https://formspree.io/f/xyzabcde)
+        3. Replace the action URL below with your endpoint
+        Messages will arrive directly in your email inbox!
+      -->
+      <form class="lp-contact-form" id="lp-form" action="https://formspree.io/f/YOUR_FORMSPREE_ID" method="POST">
+        <div class="lp-form-row">
+          <div class="lp-field-wrap">
+            <label class="lp-field-label" for="lp-name">Your Name</label>
+            <input class="lp-field" type="text" id="lp-name" name="name" placeholder="Priya Sharma" required />
+          </div>
+          <div class="lp-field-wrap">
+            <label class="lp-field-label" for="lp-email">Email Address</label>
+            <input class="lp-field" type="email" id="lp-email" name="email" placeholder="you@example.com" required />
+          </div>
+        </div>
+        <div class="lp-field-wrap">
+          <label class="lp-field-label" for="lp-subject">Subject</label>
+          <input class="lp-field" type="text" id="lp-subject" name="subject" placeholder="Question about Pro plan" required />
+        </div>
+        <div class="lp-field-wrap">
+          <label class="lp-field-label" for="lp-message">Message</label>
+          <textarea class="lp-field lp-textarea" id="lp-message" name="message" placeholder="Tell us what you're looking for..." required></textarea>
+        </div>
+        <div id="lp-form-status"></div>
+        <button type="submit" class="lp-btn-primary lp-submit-btn" id="lp-submit">Send Message</button>
+        <p class="lp-form-note">We don't spam. Your email is only used to reply to you.</p>
+      </form>
+    </div>
+  </section>
+
+  <!-- FOOTER -->
+  <footer class="lp-footer">
+    <div class="lp-footer-inner">
+      <div class="lp-footer-brand">
+        <span class="lp-logo"><span class="lp-logo-dot"></span>TrackWise</span>
+        <p>A smart expense tracker built during an AI internship at Riamona Luxury and Fashion Brands. Powered by Supabase &amp; Chart.js.</p>
+      </div>
+      <div class="lp-footer-links">
+        <div class="lp-fcol">
+          <h4>Product</h4>
+          <a href="#lp-features">Features</a>
+          <a href="#lp-how">How It Works</a>
+          <a href="#lp-pricing">Pricing</a>
+        </div>
+        <div class="lp-fcol">
+          <h4>Company</h4>
+          <a href="#lp-testimonials">Reviews</a>
+          <a href="#lp-contact">Contact</a>
+        </div>
+        <div class="lp-fcol">
+          <h4>Tech Stack</h4>
+          <a href="https://supabase.com" target="_blank" rel="noopener">Supabase</a>
+          <a href="https://www.chartjs.org" target="_blank" rel="noopener">Chart.js</a>
+          <a href="#" target="_blank" rel="noopener">jsPDF</a>
+        </div>
+      </div>
+    </div>
+    <div class="lp-footer-bottom">
+      <p>© 2026 TrackWise — Built with ❤️ at Riamona Internship</p>
+      <div class="lp-tech-badges">
+        <span class="lp-badge">Supabase</span>
+        <span class="lp-badge">Chart.js</span>
+        <span class="lp-badge">Vanilla JS</span>
+      </div>
+    </div>
+  </footer>
+
+  <!-- Add Review Modal -->
+  <div class="modal-backdrop hidden" id="review-modal">
+    <div class="review-modal-dialog">
+      <div class="review-modal-header">
+        <h3>Share Your Experience</h3>
+        <button class="review-modal-close" id="btn-close-review-modal">×</button>
+      </div>
+      <form class="review-modal-form" id="review-form">
+        <div class="form-group">
+          <label class="field-label">Your Name</label>
+          <input type="text" id="review-name" class="field-input" placeholder="John Doe" required maxlength="50" />
+        </div>
+        <div class="form-group">
+          <label class="field-label">Your Role</label>
+          <input type="text" id="review-role" class="field-input" placeholder="e.g., Student, Mumbai" required maxlength="50" />
+        </div>
+        <div class="form-group">
+          <label class="field-label">Rating</label>
+          <div class="star-rating" id="star-rating">
+            <button type="button" class="star-btn" data-rating="1">★</button>
+            <button type="button" class="star-btn" data-rating="2">★</button>
+            <button type="button" class="star-btn" data-rating="3">★</button>
+            <button type="button" class="star-btn" data-rating="4">★</button>
+            <button type="button" class="star-btn" data-rating="5">★</button>
+          </div>
+          <input type="hidden" id="review-rating" required />
+        </div>
+        <div class="form-group">
+          <label class="field-label">Your Review</label>
+          <textarea id="review-text" class="field-input field-textarea" placeholder="Tell us about your experience..." required minlength="10" maxlength="500" rows="4"></textarea>
+          <span class="char-counter" id="review-counter">0/500</span>
+        </div>
+        <div class="review-note">Your review will be visible after approval.</div>
+        <div class="dialog-actions">
+          <button type="button" class="btn-cancel-del" id="btn-cancel-review">Cancel</button>
+          <button type="submit" class="btn-confirm-del" id="btn-submit-review">Submit Review</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+</div><!-- /page-landing -->
+
+<!-- ═══════════════════════════════════════
      LOGIN PAGE
 ═══════════════════════════════════════ -->
-<div id="page-login" class="login-page">
+<div id="page-login" class="login-page hidden">
   <div class="login-card">
     <h1 class="login-title">Expense Tracker</h1>
     <p class="login-sub">Sign in to continue</p>
@@ -540,5 +1082,459 @@
 
 <script src="config.js"></script>
 <script src="app.js"></script>
+
+<script>
+/* ══════════════════════════════════════════════════
+   LANDING PAGE NAVIGATION FUNCTIONS
+══════════════════════════════════════════════════ */
+
+function hideLanding() {
+  document.getElementById('page-landing').classList.add('hidden');
+  window.scrollTo(0, 0);
+}
+
+function goToLogin() {
+  document.getElementById('page-landing').classList.add('hidden');
+  document.getElementById('page-signup').classList.add('hidden');
+  document.getElementById('page-login').classList.remove('hidden');
+  document.getElementById('page-app').classList.add('hidden');
+  window.scrollTo(0, 0);
+}
+
+function goToSignup() {
+  document.getElementById('page-landing').classList.add('hidden');
+  document.getElementById('page-login').classList.add('hidden');
+  document.getElementById('page-signup').classList.remove('hidden');
+  document.getElementById('page-app').classList.add('hidden');
+  window.scrollTo(0, 0);
+}
+
+/* ══════════════════════════════════════════════════
+   LANDING PAGE BUTTON EVENT LISTENERS
+══════════════════════════════════════════════════ */
+
+document.addEventListener('DOMContentLoaded', function() {
+  // Launch App button in nav — default goes to login.
+  // checkLandingSession() sets data-action="app" if user is already signed in.
+  const launchBtn = document.getElementById('lp-btn-launch');
+  if (launchBtn) {
+    launchBtn.setAttribute('data-action', 'login');
+    launchBtn.addEventListener('click', function(e) {
+      e.preventDefault();
+      if (launchBtn.getAttribute('data-action') === 'app') {
+        showApp();
+      } else {
+        goToLogin();
+      }
+    });
+  }
+
+  // Get Started button in hero
+  const getStartedBtn = document.getElementById('lp-btn-getstarted');
+  if (getStartedBtn) {
+    getStartedBtn.addEventListener('click', function(e) {
+      e.preventDefault();
+      goToSignup();
+    });
+  }
+
+  // Smooth scroll for anchor links
+  document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+    anchor.addEventListener('click', function (e) {
+      const href = this.getAttribute('href');
+      if (href === '#' || !href.startsWith('#lp-')) return;
+      
+      const target = document.querySelector(href);
+      if (target) {
+        e.preventDefault();
+        
+        // Calculate offset for fixed navbar (80px)
+        const navbarHeight = 80;
+        const targetPosition = target.getBoundingClientRect().top + window.pageYOffset - navbarHeight;
+        
+        window.scrollTo({
+          top: targetPosition,
+          behavior: 'smooth'
+        });
+      }
+    });
+  });
+
+  // Contact form handler
+  const contactForm = document.getElementById('lp-form');
+  if (contactForm) {
+    contactForm.addEventListener('submit', function(e) {
+      e.preventDefault();
+      
+      const formData = new FormData(this);
+      const name = formData.get('name');
+      const email = formData.get('email');
+      const subject = formData.get('subject');
+      const message = formData.get('message');
+      
+      // For demo - log to console
+      console.log('📧 Contact Form Submission:', { name, email, subject, message });
+      
+      // Show success message
+      const statusDiv = document.getElementById('lp-form-status');
+      if (statusDiv) {
+        statusDiv.innerHTML = '<p style="color:#34d399;font-size:14px;margin:12px 0;">✓ Message sent! We\'ll get back to you soon.</p>';
+      }
+      
+      // Clear form
+      this.reset();
+      
+      // Hide status after 5 seconds
+      setTimeout(() => {
+        if (statusDiv) statusDiv.innerHTML = '';
+      }, 5000);
+    });
+  }
+
+  /* ══════════════════════════════════════════════════
+     SCROLL REVEAL ANIMATION
+  ══════════════════════════════════════════════════ */
+  const lpObserver = new IntersectionObserver(
+    entries => entries.forEach(e => { if (e.isIntersecting) e.target.classList.add('lp-visible'); }),
+    { threshold: 0.12 }
+  );
+  document.querySelectorAll('.lp-reveal').forEach(el => lpObserver.observe(el));
+
+  /* ══════════════════════════════════════════════════
+     REVIEWS SYSTEM
+  ══════════════════════════════════════════════════ */
+  let selectedRating = 0;
+
+  // Load reviews from Supabase
+  async function loadReviews() {
+    const grid = document.getElementById('reviews-grid');
+    
+    if (DEMO_MODE) {
+      // Demo mode - show placeholder
+      grid.innerHTML = '<div class="lp-loading">Reviews will appear here once you set up Supabase and run reviews_setup.sql</div>';
+      return;
+    }
+
+    try {
+      const { data, error } = await db
+        .from('reviews')
+        .select('*')
+        .eq('approved', true)
+        .order('created_at', { ascending: false })
+        .limit(8);
+
+      if (error) throw error;
+
+      if (!data || data.length === 0) {
+        grid.innerHTML = `
+          <div class="lp-reviews-empty">
+            <div class="lp-reviews-empty-icon">✨</div>
+            <p class="lp-reviews-empty-title">No reviews yet</p>
+            <p class="lp-reviews-empty-sub">Be the first to share your experience!</p>
+          </div>`;
+        return;
+      }
+
+      // Smart layout: 1 review = centered, 2 = two-col centered, 3+ = normal grid
+      const count = data.length;
+      grid.className = count === 1 ? 'lp-testi-grid lp-reviews-single'
+                     : count === 2 ? 'lp-testi-grid lp-reviews-pair'
+                     : 'lp-testi-grid';
+
+      grid.innerHTML = data.map(review => `
+        <div class="lp-testi lp-reveal">
+          <div class="lp-stars">${'★'.repeat(review.rating)}${'☆'.repeat(5 - review.rating)}</div>
+          <p class="lp-testi-q">"${escapeHtml(review.review_text)}"</p>
+          <div class="lp-testi-author">
+            <div class="lp-avatar" style="background:${getRandomColor()}">${review.name.charAt(0).toUpperCase()}</div>
+            <div>
+              <div class="lp-tname">${escapeHtml(review.name)}</div>
+              <div class="lp-trole">${escapeHtml(review.role)}</div>
+            </div>
+          </div>
+        </div>
+      `).join('');
+
+      document.querySelectorAll('#reviews-grid .lp-reveal').forEach(el => lpObserver.observe(el));
+    } catch (err) {
+      console.error('Error loading reviews:', err);
+      grid.innerHTML = '<div class="lp-loading">Failed to load reviews. Please try again later.</div>';
+    }
+  }
+
+  // Open review modal
+  const btnAddReview = document.getElementById('btn-add-review');
+  const reviewModal = document.getElementById('review-modal');
+  const btnCloseReviewModal = document.getElementById('btn-close-review-modal');
+  const btnCancelReview = document.getElementById('btn-cancel-review');
+
+  if (btnAddReview) {
+    btnAddReview.addEventListener('click', async () => {
+      if (DEMO_MODE) {
+        showLandingToast('Reviews are only available with a Supabase account. Please sign up!', 'info');
+        return;
+      }
+      // Check for existing Supabase session first
+      if (!currentUser && !DEMO_MODE && db) {
+        const { data: { session } } = await db.auth.getSession();
+        if (session) {
+          currentUser = session.user;
+        }
+      }
+      if (!currentUser) {
+        // Remember they wanted to write a review, send them to login
+        sessionStorage.setItem('returnTo', 'review');
+        goToLogin();
+        showLandingLoginHint();
+        return;
+      }
+      reviewModal.classList.remove('hidden');
+      document.body.style.overflow = 'hidden';
+    });
+  }
+
+  if (btnCloseReviewModal) {
+    btnCloseReviewModal.addEventListener('click', closeReviewModal);
+  }
+
+  if (btnCancelReview) {
+    btnCancelReview.addEventListener('click', closeReviewModal);
+  }
+
+  function closeReviewModal() {
+    reviewModal.classList.add('hidden');
+    document.body.style.overflow = '';
+    document.getElementById('review-form').reset();
+    selectedRating = 0;
+    document.querySelectorAll('.star-btn').forEach(btn => btn.classList.remove('active'));
+  }
+
+  // Star rating
+  document.querySelectorAll('.star-btn').forEach(btn => {
+    btn.addEventListener('click', function() {
+      selectedRating = parseInt(this.dataset.rating);
+      document.getElementById('review-rating').value = selectedRating;
+      
+      document.querySelectorAll('.star-btn').forEach(star => {
+        const starRating = parseInt(star.dataset.rating);
+        if (starRating <= selectedRating) {
+          star.classList.add('active');
+        } else {
+          star.classList.remove('active');
+        }
+      });
+    });
+  });
+
+  // Review text counter
+  const reviewText = document.getElementById('review-text');
+  const reviewCounter = document.getElementById('review-counter');
+  if (reviewText && reviewCounter) {
+    reviewText.addEventListener('input', () => {
+      reviewCounter.textContent = `${reviewText.value.length}/500`;
+    });
+  }
+
+  // Submit review
+  const reviewForm = document.getElementById('review-form');
+  if (reviewForm) {
+    reviewForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+
+      if (!selectedRating) {
+        alert('Please select a rating');
+        return;
+      }
+
+      const name = document.getElementById('review-name').value.trim();
+      const role = document.getElementById('review-role').value.trim();
+      const reviewTextValue = document.getElementById('review-text').value.trim();
+
+      const btnSubmit = document.getElementById('btn-submit-review');
+      btnSubmit.disabled = true;
+      btnSubmit.textContent = 'Submitting...';
+
+      try {
+        const { error } = await db.from('reviews').insert({
+          user_id: currentUser.id,
+          name,
+          role,
+          rating: selectedRating,
+          review_text: reviewTextValue,
+          approved: false
+        });
+
+        if (error) throw error;
+
+        alert('Thank you! Your review will appear after approval.');
+        closeReviewModal();
+      } catch (err) {
+        console.error('Error submitting review:', err);
+        alert('Failed to submit review. Please try again.');
+      } finally {
+        btnSubmit.disabled = false;
+        btnSubmit.textContent = 'Submit Review';
+      }
+    });
+  }
+
+  // Helper functions
+  function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+  }
+
+  function getRandomColor() {
+    const colors = ['#4e7ab1', '#34d399', '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899'];
+    return colors[Math.floor(Math.random() * colors.length)];
+  }
+
+  // Load reviews on page load
+  loadReviews();
+
+  // Check existing Supabase session on landing page load so signed-in users
+  // don't need to log in again just to write a review
+  async function checkLandingSession() {
+    if (DEMO_MODE || !db) return;
+    try {
+      const { data: { session } } = await db.auth.getSession();
+      if (session) {
+        currentUser = session.user;
+        activateLandingUserNav(session.user);
+      }
+    } catch (e) { /* silent */ }
+  }
+  checkLandingSession();
+
+  function activateLandingUserNav(user) {
+    // Hide "Sign In" button, show the user nav (Dashboard + pfp)
+    const launchBtn = document.getElementById('lp-btn-launch');
+    const userNav   = document.getElementById('lp-user-nav');
+    if (launchBtn) launchBtn.classList.add('hidden');
+    if (userNav)   userNav.classList.remove('hidden');
+
+    // Set pfp initials/photo
+    const avatar = document.getElementById('lp-pfp-avatar');
+    if (avatar) {
+      const email = user.email || '';
+      const storedPfp = localStorage.getItem(`pfp_${user.id}`);
+      if (storedPfp) {
+        avatar.style.backgroundImage = `url(${storedPfp})`;
+        avatar.style.backgroundSize  = 'cover';
+        avatar.style.backgroundPosition = 'center';
+        avatar.textContent = '';
+      } else {
+        avatar.textContent = email.charAt(0).toUpperCase() || 'A';
+      }
+    }
+
+    // Dashboard button
+    const dashBtn = document.getElementById('lp-btn-dashboard');
+    if (dashBtn) {
+      dashBtn.addEventListener('click', () => showApp());
+    }
+
+    // PFP dropdown toggle
+    const pfpWrap     = document.getElementById('lp-pfp-wrap');
+    const pfpDropdown = document.getElementById('lp-pfp-dropdown');
+    if (pfpWrap && pfpDropdown) {
+      pfpWrap.addEventListener('click', (e) => {
+        e.stopPropagation();
+        pfpDropdown.classList.toggle('hidden');
+      });
+      document.addEventListener('click', () => pfpDropdown.classList.add('hidden'));
+    }
+
+    // Account option → go to app settings > account tab
+    const accountBtn = document.getElementById('lp-pfp-account');
+    if (accountBtn) {
+      accountBtn.addEventListener('click', async () => {
+        pfpDropdown.classList.add('hidden');
+        await showApp();
+        // Navigate to settings > account tab after app loads
+        setTimeout(() => {
+          if (typeof navigateTo === 'function') navigateTo('settings');
+          if (typeof openSettingsTab === 'function') openSettingsTab('account');
+        }, 300);
+      });
+    }
+
+    // Sign Out option
+    const signoutBtn = document.getElementById('lp-pfp-signout');
+    if (signoutBtn) {
+      signoutBtn.addEventListener('click', async () => {
+        pfpDropdown.classList.add('hidden');
+        if (db) await db.auth.signOut();
+        currentUser = null;
+        // Show Sign In button again, hide user nav
+        if (launchBtn) launchBtn.classList.remove('hidden');
+        if (userNav)   userNav.classList.add('hidden');
+        showLandingToast('Signed out successfully', 'success');
+      });
+    }
+  }
+
+  // Handle return intent after login (e.g. came from "Add Review" button)
+  function handleReturnIntent() {
+    const returnTo = sessionStorage.getItem('returnTo');
+    if (!returnTo) return;
+    sessionStorage.removeItem('returnTo');
+    if (returnTo === 'review' && currentUser) {
+      // Stay on landing page and open the review modal
+      document.getElementById('page-landing').classList.remove('hidden');
+      document.getElementById('page-login').classList.add('hidden');
+      document.getElementById('page-signup').classList.add('hidden');
+      document.getElementById('page-app').classList.add('hidden');
+      // Scroll to reviews section then open modal
+      setTimeout(() => {
+        const section = document.getElementById('lp-testimonials');
+        if (section) section.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        setTimeout(() => {
+          const modal = document.getElementById('review-modal');
+          if (modal) {
+            modal.classList.remove('hidden');
+            document.body.style.overflow = 'hidden';
+          }
+        }, 600);
+      }, 100);
+    }
+  }
+
+  // Expose so app.js showApp() can call it after sign-in
+  window._handleReturnIntent = handleReturnIntent;
+});
+
+/* ─── Landing page toast (non-blocking, no ugly alert) ─── */
+function showLandingToast(msg, type) {
+  let container = document.getElementById('landing-toasts');
+  if (!container) {
+    container = document.createElement('div');
+    container.id = 'landing-toasts';
+    container.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:9999;display:flex;flex-direction:column;gap:8px;pointer-events:none;';
+    document.body.appendChild(container);
+  }
+  const el = document.createElement('div');
+  const bg = type === 'info' ? '#4e7ab1' : type === 'error' ? '#ef4444' : '#34d399';
+  el.style.cssText = `background:${bg};color:#fff;padding:12px 22px;border-radius:10px;font-size:14px;font-weight:500;box-shadow:0 4px 16px rgba(0,0,0,0.3);pointer-events:auto;`;
+  el.textContent = msg;
+  container.appendChild(el);
+  setTimeout(() => { el.style.opacity = '0'; el.style.transition = 'opacity 0.3s'; setTimeout(() => el.remove(), 350); }, 3500);
+}
+
+/* ─── Subtle sign-in hint shown below the login form ─── */
+function showLandingLoginHint() {
+  // Wait for the login page to appear, then show a hint under the form
+  setTimeout(() => {
+    const card = document.querySelector('#page-login .login-card');
+    if (!card || document.getElementById('review-login-hint')) return;
+    const hint = document.createElement('p');
+    hint.id = 'review-login-hint';
+    hint.style.cssText = 'text-align:center;font-size:13px;color:#d6a7c2;margin-top:12px;';
+    hint.textContent = '✍️ Sign in to submit your review — you\'ll be taken straight back.';
+    card.appendChild(hint);
+  }, 100);
+}
+</script>
 </body>
 </html>
