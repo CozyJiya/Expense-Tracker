@@ -1609,29 +1609,72 @@ function handlePfpUpload(event) {
   event.target.value = '';
 }
 
-function savePfp() {
+async function savePfp() {
   if (!pendingPfpDataUrl) return;
   const key = `pfp_${currentUser?.id}`;
+  // Always save to localStorage for fast local access
   localStorage.setItem(key, pendingPfpDataUrl);
   if (userProfile) userProfile.pfp_url = pendingPfpDataUrl;
+
+  // Also persist to Supabase so it's available on any device/phone
+  if (!DEMO_MODE && db && currentUser) {
+    try {
+      await db.from('profiles').upsert({
+        id: currentUser.id,
+        pfp_url: pendingPfpDataUrl,
+      }, { onConflict: 'id' });
+    } catch (e) {
+      console.warn('Could not save pfp to Supabase:', e);
+    }
+  }
+
+  // Also update the landing nav avatar if it's visible
+  const landingAvatar = document.getElementById('lp-pfp-avatar');
+  if (landingAvatar) {
+    landingAvatar.style.backgroundImage = `url(${pendingPfpDataUrl})`;
+    landingAvatar.style.backgroundSize  = 'cover';
+    landingAvatar.style.backgroundPosition = 'center';
+    landingAvatar.textContent = '';
+  }
+
   pendingPfpDataUrl = null;
   $('pfp-actions').style.display = 'none';
   toast('Profile photo saved!');
 }
 
-function removePfp() {
+async function removePfp() {
   pendingPfpDataUrl = null;
   localStorage.removeItem(`pfp_${currentUser?.id}`);
   if (userProfile) userProfile.pfp_url = null;
   updatePfpDisplay(null);
   $('pfp-actions').style.display = 'none';
   $('pfp-file-input').value = '';
+  // Clear from Supabase too
+  if (!DEMO_MODE && db && currentUser) {
+    try {
+      await db.from('profiles').update({ pfp_url: null }).eq('id', currentUser.id);
+    } catch (e) { console.warn('Could not clear pfp from Supabase:', e); }
+  }
+  // Clear landing nav avatar
+  const landingAvatar = document.getElementById('lp-pfp-avatar');
+  if (landingAvatar) {
+    landingAvatar.style.backgroundImage = '';
+    const email = currentUser?.email || '';
+    landingAvatar.textContent = email.charAt(0).toUpperCase() || 'A';
+  }
   toast('Profile photo removed');
 }
 
 function loadPfp() {
-  const stored = localStorage.getItem(`pfp_${currentUser?.id}`) || userProfile?.pfp_url || null;
-  updatePfpDisplay(stored);
+  // Prefer DB pfp_url (cross-device), fall back to localStorage
+  const dbPfp    = userProfile?.pfp_url || null;
+  const localPfp = localStorage.getItem(`pfp_${currentUser?.id}`) || null;
+  const pfpUrl   = dbPfp || localPfp || null;
+  // If DB has it but local doesn't, sync to local for instant future loads
+  if (dbPfp && !localPfp) {
+    localStorage.setItem(`pfp_${currentUser?.id}`, dbPfp);
+  }
+  updatePfpDisplay(pfpUrl);
 }
 
 async function loadProfile() {
