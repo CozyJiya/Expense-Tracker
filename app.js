@@ -1,5 +1,5 @@
 /* ============================================================
-   app.js — Expense Tracker (Figma Design Match)
+   app.js — Fino (Figma Design Match)
    Requires: config.js → SUPABASE_URL, SUPABASE_ANON_KEY
    ============================================================ */
 'use strict';
@@ -32,6 +32,10 @@ let transactionType = 'spend'; // 'spend' or 'received'
 let barChart      = null;
 let donutChart    = null;
 let trendChart    = null;
+let userSubscriptions = []; // recurring subscriptions
+let userCurrency  = 'INR'; // display currency preference
+
+const CURRENCY_SYMBOLS = { INR:'₹', USD:'$', EUR:'€', GBP:'£', JPY:'¥', AED:'د.إ' };
 
 const SPEND_CATEGORIES = ['Food and drinks', 'Transport', 'Shopping', 'Groceries', 'Home', 'Entertainment', 'Event', 'Travel', 'Medical', 'Personal', 'Fitness', 'Services', 'Bills'];
 const RECEIVED_CATEGORIES = ['Earning', 'Pocket money', 'Gift', 'Borrowed', 'Refund', 'Return', 'Interest', 'Cashback'];
@@ -39,8 +43,18 @@ const PALETTE    = ['#ceb5d4','#4e7ab1','#a98dc0','#7d9fc0','#d4a0e0','#6b8fb5',
 
 /* ── Helpers ── */
 const $  = id => document.getElementById(id);
-const fmt = n  => '₹' + Number(n).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const currencySymbol = () => CURRENCY_SYMBOLS[userCurrency] || '₹';
+const fmt = n  => currencySymbol() + Number(n).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const todayStr = () => new Date().toISOString().slice(0, 10);
+// Strip internal subscription markers like "[sub:ID:2026-06]" from display
+const cleanDesc = d => (d || '').replace(/\s*\[sub:[^\]]+\]/g, '').trim();
+// Top-level HTML escape (a second escapeHtml is nested elsewhere; this one is
+// available to all top-level functions like the subscriptions UI).
+function escapeHtmlSafe(text) {
+  const div = document.createElement('div');
+  div.textContent = (text == null ? '' : String(text));
+  return div.innerHTML;
+}
 
 function toast(msg, type = 'success') {
   const el = document.createElement('div');
@@ -120,8 +134,14 @@ async function showApp() {
   $('a-email').value = email;
   await Promise.all([loadCategories(), loadExpenses(), loadProfile()]);
 
+  // Load preferences (currency) + recurring subscriptions
+  await loadPreferences();
+  await loadSubscriptions();
+
   // Check and add monthly income automatically
   await checkAndAddMonthlyIncome();
+  // Check and add any due recurring subscriptions this month
+  await checkAndAddSubscriptions();
   
   updateStats();
   navigateTo('home');
@@ -477,7 +497,7 @@ function renderExpenseList() {
           ${isReceived ? '+' : '-'}${fmt(e.amount)}
         </div>
         <div class="expense-meta">${catName} • ${dateFormatted}</div>
-        ${e.description ? `<div class="expense-meta" style="margin-top:2px;font-size:12px;opacity:0.7">${e.description}</div>` : ''}
+        ${e.description ? `<div class="expense-meta" style="margin-top:2px;font-size:12px;opacity:0.7">${cleanDesc(e.description)}</div>` : ''}
       </div>
       <div class="expense-right">
         <button class="btn-edit-expense" data-id="${e.id}" aria-label="Edit transaction">
@@ -1554,6 +1574,8 @@ function openSettingsTab(tab) {
   const el = $(`settings-${tab}`);
   if (el) el.classList.add('active');
   if (tab === 'history') renderHistoryTable();
+  if (tab === 'budgets') renderSubscriptions();
+  if (tab === 'preferences') { $('pref-currency').value = userCurrency; }
 }
 
 /* ════════════════════════════════════════
@@ -1837,9 +1859,316 @@ function renderHistoryTable() {
       <td>${formatDate(e.date)}</td>
       <td>${fmt(e.amount)}</td>
       <td>${e.categories?.name || getCatName(e.category_id) || '—'}</td>
-      <td style="color:var(--text-muted)">${e.description || '—'}</td>
+      <td style="color:var(--text-muted)">${cleanDesc(e.description) || '—'}</td>
     </tr>
   `).join('');
+}
+
+/* ════════════════════════════════════════
+   PREFERENCES — CURRENCY
+════════════════════════════════════════ */
+async function loadPreferences() {
+  // localStorage first (instant), DB as source of truth when available
+  const local = localStorage.getItem(`currency_${currentUser?.id}`);
+  if (local) userCurrency = local;
+  if (!DEMO_MODE && db && currentUser) {
+    try {
+      const { data } = await db.from('profiles').select('currency').eq('id', currentUser.id).single();
+      if (data?.currency) userCurrency = data.currency;
+    } catch (_) {}
+  }
+  if (!CURRENCY_SYMBOLS[userCurrency]) userCurrency = 'INR';
+}
+
+async function savePreferences() {
+  const sel = $('pref-currency');
+  const choice = sel.value;
+  if (!CURRENCY_SYMBOLS[choice]) { toast('Invalid currency', 'error'); return; }
+  const btn = $('btn-save-prefs');
+  btn.disabled = true; btn.textContent = 'Saving…';
+  userCurrency = choice;
+  localStorage.setItem(`currency_${currentUser?.id}`, choice);
+  if (!DEMO_MODE && db && currentUser) {
+    try {
+      await db.from('profiles').upsert({ id: currentUser.id, currency: choice });
+    } catch (e) { console.error('currency save', e); }
+  }
+  // Re-render everything that shows money
+  updateStats();
+  renderExpenseList();
+  renderHistoryTable();
+  renderSubscriptions();
+  btn.disabled = false; btn.textContent = 'Save Preferences';
+  toast('Preferences saved!');
+}
+
+/* ════════════════════════════════════════
+   HISTORY — EXPORT CSV + CLEAR ALL DATA
+════════════════════════════════════════ */
+function exportExpensesCSV() {
+  if (!allExpenses.length) { toast('No transactions to export', 'error'); return; }
+  const esc = v => {
+    const s = (v == null ? '' : String(v));
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const header = ['Date', 'Amount', 'Currency', 'Category', 'Description'];
+  const rows = allExpenses.map(e => [
+    e.date,
+    Number(e.amount).toFixed(2),
+    userCurrency,
+    e.categories?.name || getCatName(e.category_id) || '',
+    cleanDesc(e.description) || ''
+  ].map(esc).join(','));
+  const csv = [header.join(','), ...rows].join('\n');
+  const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `transactions_${todayStr()}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  toast('Exported ' + allExpenses.length + ' transactions');
+}
+
+function openClearDataModal() {
+  if (!allExpenses.length) { toast('No transactions to clear', 'error'); return; }
+  $('clear-data-modal').classList.remove('hidden');
+}
+function closeClearDataModal() {
+  $('clear-data-modal').classList.add('hidden');
+}
+async function clearAllData() {
+  const btn = $('btn-confirm-clear');
+  btn.disabled = true; btn.textContent = 'Clearing…';
+  try {
+    if (!DEMO_MODE && db && currentUser) {
+      const { error } = await db.from('expenses').delete().eq('user_id', currentUser.id);
+      if (error) throw error;
+    }
+    allExpenses = [];
+    localStorage.setItem(`exp_${currentUser?.id}`, JSON.stringify(allExpenses));
+    closeClearDataModal();
+    renderHistoryTable();
+    renderExpenseList();
+    updateStats();
+    toast('All transactions cleared');
+  } catch (e) {
+    console.error('clear all', e);
+    toast('Failed to clear data: ' + (e.message || e), 'error');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Clear Everything';
+  }
+}
+
+/* ════════════════════════════════════════
+   BUDGETS — RECURRING SUBSCRIPTIONS
+════════════════════════════════════════ */
+let editingSubId = null;
+
+async function loadSubscriptions() {
+  if (DEMO_MODE || !db || !currentUser) {
+    const stored = localStorage.getItem(`subs_${currentUser?.id}`);
+    userSubscriptions = stored ? JSON.parse(stored) : [];
+    return;
+  }
+  try {
+    const { data, error } = await db.from('subscriptions')
+      .select('*').eq('user_id', currentUser.id).order('created_at', { ascending: true });
+    if (error) throw error;
+    userSubscriptions = data || [];
+  } catch (e) {
+    console.error('load subscriptions', e);
+    userSubscriptions = [];
+  }
+}
+
+function renderSubscriptions() {
+  const list = $('subscriptions-list');
+  if (!list) return;
+  if (!userSubscriptions.length) {
+    list.innerHTML = `<div class="sub-empty">No subscriptions yet. Add one to track recurring payments automatically.</div>`;
+    return;
+  }
+  list.innerHTML = userSubscriptions.map(s => {
+    const catName = s.category_id ? (getCatName(s.category_id) || 'Uncategorized') : 'Uncategorized';
+    const initial = (s.name || '?').charAt(0).toUpperCase();
+    return `
+      <div class="sub-row">
+        <div class="sub-icon">${initial}</div>
+        <div class="sub-info">
+          <div class="sub-name">${escapeHtmlSafe(s.name)}</div>
+          <div class="sub-meta">${catName} · every month on day ${s.day_of_month}</div>
+        </div>
+        <div class="sub-amount">${fmt(s.amount)}</div>
+        <div class="sub-actions">
+          <button class="sub-act-btn" title="Edit" onclick="openSubscriptionModal('${s.id}')">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+          </button>
+          <button class="sub-act-btn danger" title="Delete" onclick="deleteSubscription('${s.id}')">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+          </button>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+function populateSubCategorySelect(selectedId) {
+  const sel = $('sub-category');
+  if (!sel) return;
+  const spendCats = allCategories.filter(c => c.type === 'spend');
+  sel.innerHTML = `<option value="">Uncategorized</option>` +
+    spendCats.map(c => `<option value="${c.id}">${escapeHtmlSafe(c.name)}</option>`).join('');
+  if (selectedId) sel.value = selectedId;
+}
+
+function openSubscriptionModal(id) {
+  editingSubId = id || null;
+  populateSubCategorySelect();
+  if (id) {
+    const s = userSubscriptions.find(x => String(x.id) === String(id));
+    if (s) {
+      $('subscription-modal-title').textContent = 'Edit Subscription';
+      $('sub-name').value = s.name;
+      $('sub-amount').value = s.amount;
+      $('sub-day').value = s.day_of_month;
+      $('sub-category').value = s.category_id || '';
+    }
+  } else {
+    $('subscription-modal-title').textContent = 'Add Subscription';
+    $('sub-name').value = '';
+    $('sub-amount').value = '';
+    $('sub-day').value = '1';
+    $('sub-category').value = '';
+  }
+  $('subscription-modal').classList.remove('hidden');
+}
+function closeSubscriptionModal() {
+  $('subscription-modal').classList.add('hidden');
+  editingSubId = null;
+}
+
+async function saveSubscription() {
+  const name = $('sub-name').value.trim();
+  const amount = parseFloat($('sub-amount').value);
+  let day = parseInt($('sub-day').value, 10);
+  const categoryId = $('sub-category').value || null;
+
+  if (!name) { toast('Enter a name', 'error'); return; }
+  if (!amount || amount <= 0) { toast('Enter a valid amount', 'error'); return; }
+  if (!day || day < 1) day = 1;
+  if (day > 28) day = 28; // keep it valid for every month
+
+  const btn = $('btn-save-subscription');
+  btn.disabled = true; btn.textContent = 'Saving…';
+
+  try {
+    if (DEMO_MODE || !db || !currentUser) {
+      if (editingSubId) {
+        const i = userSubscriptions.findIndex(x => String(x.id) === String(editingSubId));
+        if (i !== -1) userSubscriptions[i] = { ...userSubscriptions[i], name, amount, day_of_month: day, category_id: categoryId };
+      } else {
+        userSubscriptions.push({ id: Date.now().toString(), user_id: currentUser?.id, name, amount, day_of_month: day, category_id: categoryId, active: true, created_at: new Date().toISOString() });
+      }
+      localStorage.setItem(`subs_${currentUser?.id}`, JSON.stringify(userSubscriptions));
+    } else {
+      if (editingSubId) {
+        const { error } = await db.from('subscriptions')
+          .update({ name, amount, day_of_month: day, category_id: categoryId })
+          .eq('id', editingSubId);
+        if (error) throw error;
+      } else {
+        const { error } = await db.from('subscriptions').insert({
+          user_id: currentUser.id, name, amount, day_of_month: day, category_id: categoryId, active: true
+        });
+        if (error) throw error;
+      }
+      await loadSubscriptions();
+    }
+    closeSubscriptionModal();
+    renderSubscriptions();
+    // Apply immediately if this month's charge is already due
+    await checkAndAddSubscriptions();
+    updateStats();
+    toast('Subscription saved!');
+  } catch (e) {
+    console.error('save subscription', e);
+    const msg = (e.message || '').includes('does not exist')
+      ? 'Subscriptions table not found. Run budgets_setup.sql in Supabase.'
+      : ('Failed to save: ' + (e.message || e));
+    toast(msg, 'error');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Save Subscription';
+  }
+}
+
+async function deleteSubscription(id) {
+  try {
+    if (DEMO_MODE || !db || !currentUser) {
+      userSubscriptions = userSubscriptions.filter(x => String(x.id) !== String(id));
+      localStorage.setItem(`subs_${currentUser?.id}`, JSON.stringify(userSubscriptions));
+    } else {
+      const { error } = await db.from('subscriptions').delete().eq('id', id);
+      if (error) throw error;
+      userSubscriptions = userSubscriptions.filter(x => String(x.id) !== String(id));
+    }
+    renderSubscriptions();
+    toast('Subscription removed');
+  } catch (e) {
+    console.error('delete subscription', e);
+    toast('Failed to remove subscription', 'error');
+  }
+}
+
+// On login each month: add a transaction for any subscription whose
+// day has passed and that hasn't been charged yet this month.
+async function checkAndAddSubscriptions() {
+  if (!userSubscriptions.length) return;
+  const now = new Date();
+  const y = now.getFullYear(), m = now.getMonth();
+  const todayDay = now.getDate();
+  const monthTag = `${y}-${String(m + 1).padStart(2, '0')}`;
+
+  for (const s of userSubscriptions) {
+    if (s.active === false) continue;
+    if (todayDay < (s.day_of_month || 1)) continue; // not due yet this month
+
+    const chargeDate = `${y}-${String(m + 1).padStart(2, '0')}-${String(Math.min(s.day_of_month || 1, 28)).padStart(2, '0')}`;
+    const marker = `[sub:${s.id}:${monthTag}]`;
+
+    // Already added this month?
+    const exists = allExpenses.some(e => (e.description || '').includes(marker));
+    if (exists) continue;
+
+    const desc = `${s.name} (Subscription)${' ' + marker}`;
+
+    if (DEMO_MODE || !db || !currentUser) {
+      allExpenses.unshift({
+        id: Date.now().toString() + Math.random().toString(36).slice(2, 6),
+        user_id: currentUser?.id,
+        amount: s.amount,
+        category_id: s.category_id || null,
+        date: chargeDate,
+        description: desc,
+        created_at: new Date().toISOString(),
+        categories: { name: s.category_id ? getCatName(s.category_id) : 'Subscription' }
+      });
+      localStorage.setItem(`exp_${currentUser?.id}`, JSON.stringify(allExpenses));
+    } else {
+      try {
+        const { data, error } = await db.from('expenses').insert({
+          user_id: currentUser.id,
+          amount: s.amount,
+          category_id: s.category_id || null,
+          date: chargeDate,
+          description: desc,
+        }).select('*, categories(name)').single();
+        if (error) throw error;
+        allExpenses.unshift(data);
+      } catch (e) { console.error('auto-add subscription', e); }
+    }
+  }
 }
 
 /* ════════════════════════════════════════
@@ -2327,7 +2656,7 @@ async function downloadReport() {
         <td style="padding:10px 14px;">
           <span style="background:${badgeBg};color:${badgeColor};padding:3px 10px;border-radius:20px;font-size:11px;font-weight:600;">${catName}</span>
         </td>
-        <td style="padding:10px 14px;color:#374151;font-size:13px;">${e.description || ''}</td>
+        <td style="padding:10px 14px;color:#374151;font-size:13px;">${cleanDesc(e.description) || ''}</td>
         <td style="padding:10px 14px;text-align:right;color:${amtColor};font-weight:700;white-space:nowrap;">${amtPrefix}${rf(e.amount)}</td>
       </tr>`;
     }).join('');
@@ -2457,7 +2786,7 @@ async function downloadReport() {
 
         <!-- Header -->
         <div style="background:#0d1f3c;padding:22px 32px;display:flex;justify-content:space-between;align-items:center;">
-          <div style="color:white;font-size:22px;font-weight:700;letter-spacing:-0.3px;">Expense Tracker</div>
+          <div style="color:white;font-size:22px;font-weight:700;letter-spacing:-0.3px;">Fino</div>
           <div style="display:flex;align-items:center;gap:16px;">
             <div style="color:#94a3b8;font-size:12px;">Report: ${reportDate}</div>
             <div style="width:52px;height:52px;border-radius:50%;background:#1e3a5f;display:flex;align-items:center;justify-content:center;color:white;font-size:20px;font-weight:700;border:3px solid #334155;flex-shrink:0;">
@@ -2582,7 +2911,7 @@ async function downloadReport() {
 
         <!-- Footer -->
         <div style="background:#0d1f3c;margin-top:32px;padding:13px 32px;display:flex;justify-content:space-between;align-items:center;">
-          <span style="color:#94a3b8;font-size:11px;">Expense Tracker</span>
+          <span style="color:#94a3b8;font-size:11px;">Fino</span>
           <span style="color:#94a3b8;font-size:11px;">Confidential Financial Report</span>
           <span style="color:#94a3b8;font-size:11px;">Page 1</span>
         </div>
@@ -2756,6 +3085,31 @@ function bindEvents() {
   $('delete-account-modal').addEventListener('click', e => {
     if (e.target === $('delete-account-modal')) closeDeleteAccountModal();
   });
+
+  /* Preferences */
+  $('btn-save-prefs')?.addEventListener('click', savePreferences);
+
+  /* History — export + clear all */
+  $('btn-export-csv')?.addEventListener('click', exportExpensesCSV);
+  $('btn-clear-all-data')?.addEventListener('click', openClearDataModal);
+  $('btn-cancel-clear')?.addEventListener('click', closeClearDataModal);
+  $('btn-confirm-clear')?.addEventListener('click', clearAllData);
+  $('clear-data-modal')?.addEventListener('click', e => {
+    if (e.target === $('clear-data-modal')) closeClearDataModal();
+  });
+
+  /* Budgets — subscriptions */
+  $('btn-add-subscription')?.addEventListener('click', () => openSubscriptionModal());
+  $('btn-close-subscription-modal')?.addEventListener('click', closeSubscriptionModal);
+  $('btn-cancel-subscription')?.addEventListener('click', closeSubscriptionModal);
+  $('btn-save-subscription')?.addEventListener('click', saveSubscription);
+  $('subscription-modal')?.addEventListener('click', e => {
+    if (e.target === $('subscription-modal')) closeSubscriptionModal();
+  });
+
+  /* Community + Upgrade shortcuts from settings */
+  $('btn-go-community')?.addEventListener('click', goToCommunityFromApp);
+  $('btn-go-pricing')?.addEventListener('click', goToPricingFromApp);
 
   /* Nav */
   document.querySelectorAll('.nav-btn[data-page]').forEach(btn => {
@@ -2964,3 +3318,1068 @@ async function confirmDeleteAccount() {
     });
   }
 })();
+
+/* ============================================================
+   LANDING PAGE SCRIPT (moved from index.html inline <script>)
+   ============================================================ */
+/* ══════════════════════════════════════════════════
+   LANDING PAGE NAVIGATION FUNCTIONS
+══════════════════════════════════════════════════ */
+
+function hideLanding() {
+  document.getElementById('page-landing').classList.add('hidden');
+  window.scrollTo(0, 0);
+}
+
+function goToLogin() {
+  document.getElementById('page-landing').classList.add('hidden');
+  document.getElementById('page-signup').classList.add('hidden');
+  document.getElementById('page-login').classList.remove('hidden');
+  document.getElementById('page-app').classList.add('hidden');
+  document.getElementById('page-faq').classList.add('hidden');
+  window.scrollTo(0, 0);
+}
+
+function goToSignup() {
+  document.getElementById('page-landing').classList.add('hidden');
+  document.getElementById('page-login').classList.add('hidden');
+  document.getElementById('page-signup').classList.remove('hidden');
+  document.getElementById('page-app').classList.add('hidden');
+  document.getElementById('page-faq').classList.add('hidden');
+  window.scrollTo(0, 0);
+}
+
+/* ── FAQ Page show/hide ── */
+/* Tracks whether the FAQ/Pricing page was opened from inside the app
+   (settings) vs from the public landing page, so Back returns correctly. */
+let pageOrigin = 'landing'; // 'landing' | 'app'
+
+function returnFromSubPage() {
+  document.getElementById('page-faq')?.classList.add('hidden');
+  document.getElementById('page-pricing')?.classList.add('hidden');
+  if (pageOrigin === 'app') {
+    document.getElementById('page-landing')?.classList.add('hidden');
+    document.getElementById('page-app')?.classList.remove('hidden');
+    if (typeof navigateTo === 'function') navigateTo('settings');
+  } else {
+    document.getElementById('page-landing')?.classList.remove('hidden');
+  }
+  pageOrigin = 'landing';
+  window.scrollTo(0, 0);
+}
+
+function showFAQPage(e) {
+  if (e) e.preventDefault();
+  pageOrigin = 'landing';
+  document.getElementById('page-landing').classList.add('hidden');
+  document.getElementById('page-faq').classList.remove('hidden');
+  document.getElementById('page-pricing')?.classList.add('hidden');
+  window.scrollTo(0, 0);
+  loadFAQFull();
+}
+
+function hideFAQPage(e) {
+  if (e) e.preventDefault();
+  returnFromSubPage();
+}
+
+/* ── Pricing Page show/hide ── */
+function showPricingPage(e) {
+  if (e) e.preventDefault();
+  pageOrigin = 'landing';
+  document.getElementById('page-landing').classList.add('hidden');
+  document.getElementById('page-pricing').classList.remove('hidden');
+  document.getElementById('page-faq')?.classList.add('hidden');
+  window.scrollTo(0, 0);
+}
+
+function hidePricingPage(e) {
+  if (e) e.preventDefault();
+  returnFromSubPage();
+}
+
+/* ── Jump from inside the app (settings) to Community / Pricing ── */
+function goToCommunityFromApp() {
+  pageOrigin = 'app';
+  document.getElementById('page-app')?.classList.add('hidden');
+  document.getElementById('page-landing')?.classList.add('hidden');
+  document.getElementById('page-pricing')?.classList.add('hidden');
+  document.getElementById('page-faq').classList.remove('hidden');
+  window.scrollTo(0, 0);
+  if (typeof loadFAQFull === 'function') loadFAQFull();
+}
+function goToPricingFromApp() {
+  pageOrigin = 'app';
+  document.getElementById('page-app')?.classList.add('hidden');
+  document.getElementById('page-landing')?.classList.add('hidden');
+  document.getElementById('page-faq')?.classList.add('hidden');
+  document.getElementById('page-pricing').classList.remove('hidden');
+  window.scrollTo(0, 0);
+}
+
+/* ── Member-since helper ── */
+function getMemberDuration(createdAt) {
+  if (!createdAt) return 'Member for —';
+  const created = new Date(createdAt);
+  const now = new Date();
+  const days = Math.floor((now - created) / (1000 * 60 * 60 * 24));
+  if (days < 1)  return 'Member since today';
+  if (days < 30) return `Member for ${days} day${days === 1 ? '' : 's'}`;
+  const months = Math.floor(days / 30);
+  if (months < 12) return `Member for ${months} month${months === 1 ? '' : 's'}`;
+  const years = Math.floor(months / 12);
+  return `Member for ${years} year${years === 1 ? '' : 's'}`;
+}
+
+/* ── Fill user info strip in modals ── */
+async function fillUserInfoStrip(avatarId, nameId, sinceId) {
+  if (!currentUser) return;
+  const username = currentUser.user_metadata?.username || currentUser.email?.split('@')[0] || 'user';
+  const createdAt = currentUser.created_at;
+
+  // Name + since
+  const nameEl  = document.getElementById(nameId);
+  const sinceEl = document.getElementById(sinceId);
+  if (nameEl)  nameEl.textContent  = '@' + username;
+  if (sinceEl) sinceEl.textContent = getMemberDuration(createdAt);
+
+  // Avatar: try DB pfp_url first, then localStorage
+  const avatarEl = document.getElementById(avatarId);
+  if (!avatarEl) return;
+  let pfpUrl = null;
+  if (!DEMO_MODE && db) {
+    const { data } = await db.from('profiles').select('pfp_url').eq('id', currentUser.id).single();
+    pfpUrl = data?.pfp_url || null;
+  }
+  if (!pfpUrl) pfpUrl = localStorage.getItem(`pfp_${currentUser.id}`) || null;
+  if (pfpUrl) {
+    avatarEl.style.backgroundImage = `url(${pfpUrl})`;
+    avatarEl.style.backgroundSize  = 'cover';
+    avatarEl.style.backgroundPosition = 'center';
+    avatarEl.textContent = '';
+  } else {
+    avatarEl.style.backgroundImage = '';
+    avatarEl.textContent = username.charAt(0).toUpperCase();
+  }
+}
+
+/* ══════════════════════════════════════════════════
+   LANDING PAGE BUTTON EVENT LISTENERS
+══════════════════════════════════════════════════ */
+
+document.addEventListener('DOMContentLoaded', function() {
+  // Launch App button in nav
+  const launchBtn = document.getElementById('lp-btn-launch');
+  if (launchBtn) {
+    launchBtn.setAttribute('data-action', 'login');
+    launchBtn.addEventListener('click', function(e) {
+      e.preventDefault();
+      if (launchBtn.getAttribute('data-action') === 'app') showApp();
+      else goToLogin();
+    });
+  }
+
+  // Get Started button in hero
+  const getStartedBtn = document.getElementById('lp-btn-getstarted');
+  if (getStartedBtn) {
+    getStartedBtn.addEventListener('click', function(e) { e.preventDefault(); goToSignup(); });
+  }
+
+  // Smooth scroll for anchor links
+  document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+    anchor.addEventListener('click', function(e) {
+      const href = this.getAttribute('href');
+      if (href === '#' || !href.startsWith('#lp-')) return;
+      const target = document.querySelector(href);
+      if (target) {
+        e.preventDefault();
+        const navbarHeight = 80;
+        const targetPosition = target.getBoundingClientRect().top + window.pageYOffset - navbarHeight;
+        window.scrollTo({ top: targetPosition, behavior: 'smooth' });
+      }
+    });
+  });
+
+  // Contact form handler
+  const contactForm = document.getElementById('lp-form');
+  if (contactForm) {
+    contactForm.addEventListener('submit', function(e) {
+      e.preventDefault();
+      console.log('📧 Contact Form Submission');
+      const statusDiv = document.getElementById('lp-form-status');
+      if (statusDiv) statusDiv.innerHTML = '<p style="color:#34d399;font-size:14px;margin:12px 0;">✓ Message sent! We\'ll get back to you soon.</p>';
+      this.reset();
+      setTimeout(() => { if (statusDiv) statusDiv.innerHTML = ''; }, 5000);
+    });
+  }
+
+  /* ── Scroll Reveal ── */
+  const lpObserver = new IntersectionObserver(
+    entries => entries.forEach(e => { if (e.isIntersecting) e.target.classList.add('lp-visible'); }),
+    { threshold: 0.12 }
+  );
+  document.querySelectorAll('.lp-reveal').forEach(el => lpObserver.observe(el));
+
+  /* ══════════════════════════════════════════════════
+     REVIEWS SYSTEM
+  ══════════════════════════════════════════════════ */
+  let selectedRating = 0;
+
+  function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+  }
+
+  function getRandomColor() {
+    const colors = ['#4e7ab1', '#34d399', '#F59E0B', '#8B5CF6', '#EC4899', '#b987af'];
+    return colors[Math.floor(Math.random() * colors.length)];
+  }
+
+  async function loadReviews() {
+    const grid = document.getElementById('reviews-grid');
+    if (!grid) return;
+    if (DEMO_MODE) {
+      grid.innerHTML = '<div class="lp-loading">Reviews will appear once Supabase is set up.</div>';
+      return;
+    }
+    try {
+      const { data, error } = await db.from('reviews').select('*').eq('approved', true)
+        .order('created_at', { ascending: false }).limit(8);
+      if (error) throw error;
+      if (!data || data.length === 0) {
+        grid.innerHTML = `<div class="lp-reviews-empty">
+          <div class="lp-reviews-empty-icon">✨</div>
+          <p class="lp-reviews-empty-title">No reviews yet</p>
+          <p class="lp-reviews-empty-sub">Be the first to share your experience!</p></div>`;
+        return;
+      }
+      const count = data.length;
+      grid.className = count === 1 ? 'lp-testi-grid lp-reviews-single'
+                     : count === 2 ? 'lp-testi-grid lp-reviews-pair'
+                     : 'lp-testi-grid';
+      grid.innerHTML = data.map(review => {
+        const uname  = review.username || 'user';
+        const letter = uname.charAt(0).toUpperCase();
+        const pfpStyle = review.pfp_url
+          ? `background-image:url(${review.pfp_url});background-size:cover;background-position:center;`
+          : `background:${getRandomColor()};`;
+        const sinceText = getMemberDuration(review.user_created_at || review.created_at);
+        return `<div class="lp-testi lp-reveal">
+          <div class="lp-stars">${'★'.repeat(review.rating)}${'☆'.repeat(5-review.rating)}</div>
+          <p class="lp-testi-q">"${escapeHtml(review.review_text)}"</p>
+          <div class="lp-testi-author">
+            <div class="lp-avatar" style="${pfpStyle}">${review.pfp_url ? '' : letter}</div>
+            <div>
+              <div class="lp-tname">@${escapeHtml(uname)}</div>
+              <div class="lp-trole">${sinceText}</div>
+            </div>
+          </div>
+        </div>`;
+      }).join('');
+      document.querySelectorAll('#reviews-grid .lp-reveal').forEach(el => lpObserver.observe(el));
+    } catch (err) {
+      console.error('Error loading reviews:', err);
+      grid.innerHTML = '<div class="lp-loading">Failed to load reviews.</div>';
+    }
+  }
+
+  // Open review modal
+  const btnAddReview = document.getElementById('btn-add-review');
+  const reviewModal  = document.getElementById('review-modal');
+
+  if (btnAddReview) {
+    btnAddReview.addEventListener('click', async () => {
+      if (DEMO_MODE) { showLandingToast('Reviews require a Supabase account. Please sign up!', 'info'); return; }
+      if (!currentUser && db) {
+        const { data: { session } } = await db.auth.getSession();
+        if (session) currentUser = session.user;
+      }
+      if (!currentUser) {
+        sessionStorage.setItem('returnTo', 'review');
+        goToLogin();
+        showLandingLoginHint();
+        return;
+      }
+      await fillUserInfoStrip('review-user-avatar', 'review-user-name', 'review-user-since');
+      reviewModal.classList.remove('hidden');
+      document.body.style.overflow = 'hidden';
+    });
+  }
+
+  function closeReviewModal() {
+    reviewModal.classList.add('hidden');
+    document.body.style.overflow = '';
+    document.getElementById('review-form').reset();
+    selectedRating = 0;
+    document.querySelectorAll('.star-btn').forEach(btn => btn.classList.remove('active'));
+  }
+
+  document.getElementById('btn-close-review-modal')?.addEventListener('click', closeReviewModal);
+  document.getElementById('btn-cancel-review')?.addEventListener('click', closeReviewModal);
+
+  // Star rating
+  document.querySelectorAll('.star-btn').forEach(btn => {
+    btn.addEventListener('click', function() {
+      selectedRating = parseInt(this.dataset.rating);
+      document.getElementById('review-rating').value = selectedRating;
+      document.querySelectorAll('.star-btn').forEach(s => {
+        s.classList.toggle('active', parseInt(s.dataset.rating) <= selectedRating);
+      });
+    });
+  });
+
+  // Counter
+  const reviewText = document.getElementById('review-text');
+  const reviewCounter = document.getElementById('review-counter');
+  if (reviewText) reviewText.addEventListener('input', () => {
+    reviewCounter.textContent = `${reviewText.value.length}/500`;
+  });
+
+  // Submit review — uses username + pfp_url from profiles
+  document.getElementById('review-form')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    if (!selectedRating) { showLandingToast('Please select a rating', 'error'); return; }
+    const reviewTextValue = document.getElementById('review-text').value.trim();
+    const btnSubmit = document.getElementById('btn-submit-review');
+    btnSubmit.disabled = true; btnSubmit.textContent = 'Submitting...';
+    try {
+      // Fetch latest profile for username + pfp_url
+      const { data: prof } = await db.from('profiles').select('username, pfp_url').eq('id', currentUser.id).single();
+      const username = prof?.username || currentUser.user_metadata?.username || currentUser.email?.split('@')[0] || 'user';
+      const pfpUrl   = prof?.pfp_url || localStorage.getItem(`pfp_${currentUser.id}`) || null;
+      
+      // Try to insert with new schema first
+      let { error } = await db.from('reviews').insert({
+        user_id:          currentUser.id,
+        username,
+        pfp_url:          pfpUrl,
+        user_created_at:  currentUser.created_at,
+        rating:           selectedRating,
+        review_text:      reviewTextValue,
+        approved:         false
+      });
+      
+      // If failed, try old schema (name, role instead of username, pfp_url)
+      if (error && error.message.includes('column')) {
+        console.log('Trying old schema...');
+        const result = await db.from('reviews').insert({
+          user_id:     currentUser.id,
+          name:        username,
+          role:        'Member',
+          rating:      selectedRating,
+          review_text: reviewTextValue,
+          approved:    false
+        });
+        error = result.error;
+      }
+      
+      if (error) {
+        console.error('Supabase error details:', error);
+        if (error.message.includes('relation') && error.message.includes('does not exist')) {
+          showLandingToast('Reviews table not found. Please run reviews_setup.sql in Supabase.', 'error');
+        } else if (error.message.includes('violates check constraint')) {
+          showLandingToast('Review must be 10-500 characters.', 'error');
+        } else {
+          showLandingToast('Error: ' + error.message, 'error');
+        }
+        throw error;
+      }
+      showLandingToast('Thank you! Your review will appear after approval.', 'success');
+      closeReviewModal();
+      // Reset form
+      selectedRating = 0;
+      document.getElementById('review-text').value = '';
+      document.querySelectorAll('.star-btn').forEach(s => s.classList.remove('active'));
+    } catch (err) {
+      console.error('Error submitting review:', err);
+      // Error already handled above
+    } finally {
+      btnSubmit.disabled = false; btnSubmit.textContent = 'Submit Review';
+    }
+  });
+
+  loadReviews();
+
+  /* ══════════════════════════════════════════════════
+     FAQ SYSTEM
+  ══════════════════════════════════════════════════ */
+  let allFAQs = [];
+  let answeringFAQId = null;
+
+  // Load preview FAQs (latest 4) on landing page
+  async function loadFAQPreview() {
+    const container = document.getElementById('faq-preview-grid');
+    if (!container) return;
+    if (DEMO_MODE) {
+      container.innerHTML = '<div class="lp-loading">FAQ preview requires Supabase.</div>';
+      return;
+    }
+    try {
+      const { data, error } = await db.from('faqs')
+        .select('*, faq_answers(id), faq_likes(id)')
+        .eq('is_published', true)
+        .order('created_at', { ascending: false })
+        .limit(9);
+      if (error) throw error;
+      if (!data || data.length === 0) {
+        container.innerHTML = '<div class="lp-loading" style="color: rgba(200,216,238,0.4); font-size: 13px;">No questions yet</div>';
+        return;
+      }
+      // Sort by like count (most liked first), then keep only the top 3
+      data.sort((a, b) => (b.faq_likes?.length || 0) - (a.faq_likes?.length || 0));
+      const top3 = data.slice(0, 3);
+
+      // Get user's liked FAQ ids
+      let likedIds = new Set();
+      if (currentUser) {
+        const { data: liked } = await db.from('faq_likes').select('faq_id').eq('user_id', currentUser.id);
+        if (liked) liked.forEach(l => likedIds.add(l.faq_id));
+      }
+
+      container.innerHTML = top3.map(faq =>
+        renderFAQCard(faq, faq.faq_answers?.length || 0, false, faq.faq_likes?.length || 0, likedIds.has(faq.id))
+      ).join('');
+    } catch(err) {
+      console.error('FAQ preview error:', err);
+      container.innerHTML = '<div class="lp-loading">Failed to load FAQs.</div>';
+    }
+  }
+  
+  // Load FAQ preview on page load
+  loadFAQPreview();
+
+  // Load ALL FAQs (for full page)
+  window.loadFAQFull = async function() {
+    const container = document.getElementById('faq-full-list');
+    if (!container) return;
+    if (DEMO_MODE) {
+      container.innerHTML = '<div class="faq-no-results">FAQ requires Supabase.</div>';
+      return;
+    }
+    try {
+      container.innerHTML = '<div class="lp-reviews-empty"><div class="lp-reviews-empty-icon">⏳</div><p>Loading...</p></div>';
+      const { data, error } = await db.from('faqs')
+        .select('*, faq_answers(*), faq_likes(id, user_id)')
+        .order('created_at', { ascending: false });
+      if (error) throw error;
+      allFAQs = data || [];
+      // Sort by likes
+      allFAQs.sort((a, b) => (b.faq_likes?.length || 0) - (a.faq_likes?.length || 0));
+
+      // Get user's liked ids
+      if (currentUser) {
+        const { data: liked } = await db.from('faq_likes').select('faq_id').eq('user_id', currentUser.id);
+        window._faqLikedIds = new Set(liked ? liked.map(l => l.faq_id) : []);
+      } else {
+        window._faqLikedIds = new Set();
+      }
+      renderFullFAQ(allFAQs);
+    } catch(err) {
+      console.error('FAQ full load error:', err);
+      container.innerHTML = '<div class="faq-no-results">Failed to load FAQs.</div>';
+    }
+  };
+
+  function renderFullFAQ(faqs) {
+    const container = document.getElementById('faq-full-list');
+    if (!container) return;
+    if (!faqs || faqs.length === 0) {
+      container.innerHTML = '<div class="faq-no-results">No questions found.</div>';
+      return;
+    }
+    const likedIds = window._faqLikedIds || new Set();
+    container.innerHTML = faqs.map(faq =>
+      renderFAQCard(faq, (faq.faq_answers||[]).length, true, faq.faq_likes?.length || 0, likedIds.has(faq.id))
+    ).join('');
+  }
+
+  // Expand/collapse a single question card to reveal its answers
+  window.toggleFAQCard = function(headEl) {
+    const card = headEl.closest('.faq-card-collapsible');
+    if (!card) return;
+    card.classList.toggle('open');
+  };
+
+  // Deterministic avatar gradient (matches reference landing palette)
+  function avatarGradient(seed) {
+    const grads = [
+      'linear-gradient(135deg,#4e7ab1,#ceb5d4)',
+      'linear-gradient(135deg,#b987af,#34d399)',
+      'linear-gradient(135deg,#7BB8F0,#4e7ab1)',
+      'linear-gradient(135deg,#4e7ab1,#34d399)',
+      'linear-gradient(135deg,#ceb5d4,#7BB8F0)',
+      'linear-gradient(135deg,#b987af,#4e7ab1)'
+    ];
+    let h = 0;
+    const s = String(seed || '');
+    for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+    return grads[h % grads.length];
+  }
+
+  function renderFAQCard(faq, answerCount, showAnswers, likeCount = 0, userLiked = false) {
+    const since = getMemberDuration(faq.user_created_at || faq.created_at);
+    const uname = faq.username || 'user';
+    const initial = uname.charAt(0).toUpperCase();
+    const grad = avatarGradient(faq.id || uname);
+    const answerLabel = `${answerCount} answer${answerCount === 1 ? '' : 's'}`;
+    // Avatar: use saved pfp image if present, else gradient + initial
+    const avStyle  = faq.pfp_url
+      ? `background-image:url(${faq.pfp_url});background-size:cover;background-position:center;`
+      : `background:${grad}`;
+    const avInner  = faq.pfp_url ? '' : initial;
+
+    // ---- PREVIEW (landing) cards: clean qcard markup matching the reference ----
+    if (!showAnswers) {
+      const likedClass = userLiked ? ' liked' : '';
+      return `<div class="qcard" data-faq-id="${faq.id}" onclick="showFAQPage(event)" style="cursor:pointer">
+        <div class="u">
+          <span class="av" style="${avStyle}">${avInner}</span>
+          <div>
+            <div class="un">@${escapeHtml(uname)}</div>
+            <div class="ms">${since}</div>
+          </div>
+        </div>
+        <div class="q">${escapeHtml(faq.question_text)}</div>
+        <div class="foot">
+          <span class="qlike${likedClass}" onclick="event.stopPropagation();toggleFAQLike(this, '${faq.id}')" title="${userLiked?'Unlike':'Like'} this question">
+            <span class="heart">♥</span> <span class="like-count">${likeCount}</span>
+          </span>
+          <span>💬 ${answerLabel}</span>
+        </div>
+      </div>`;
+    }
+
+    // ---- FULL questions page: keep richer faq-card with answers + answer button ----
+    const answers = faq.faq_answers ? faq.faq_answers : [];
+    const likedClass = userLiked ? ' liked' : '';
+    const heartSvg = `<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>`;
+    const answersHtml = answers.length > 0 ? `<div class="faq-card-answers">${answers.map(a => {
+      const al = a.username || 'user';
+      return `<div class="faq-answer">
+        <div class="faq-answer-text">${escapeHtml(a.answer_text)}</div>
+        <div class="faq-answer-meta">— @${escapeHtml(al)} · ${getMemberDuration(a.user_created_at||a.created_at)}</div>
+      </div>`;
+    }).join('')}</div>` : '';
+
+    const emptyAnswers = answers.length === 0
+      ? `<div class="faq-card-answers faq-card-answers-empty">No answers yet — be the first to answer.</div>`
+      : answersHtml;
+
+    return `<div class="faq-card faq-card-collapsible" data-faq-id="${faq.id}">
+      <div class="faq-card-head" onclick="toggleFAQCard(this)">
+        <div class="faq-card-user">
+          <div class="faq-card-avatar" style="${avStyle}">${avInner}</div>
+          <div>
+            <div class="faq-card-username">@${escapeHtml(uname)}</div>
+            <div class="faq-card-since">${since}</div>
+          </div>
+        </div>
+        <div class="faq-card-q">${escapeHtml(faq.question_text)}</div>
+        <div class="faq-card-meta">@${escapeHtml(uname)} · ${since}</div>
+        <div class="faq-card-collapsed-foot">
+          <span>💬 ${answerLabel}</span>
+          <span class="faq-card-chevron">▾</span>
+        </div>
+      </div>
+      <div class="faq-card-body">
+        <div class="faq-card-answers-scroll">
+          ${emptyAnswers}
+        </div>
+        <div class="faq-card-footer">
+          <button class="btn-faq-like${likedClass}" onclick="toggleFAQLike(this, '${faq.id}')" title="${userLiked?'Unlike':'Like'} this question">
+            ${heartSvg}
+            <span class="like-count">${likeCount}</span>
+          </button>
+          <div style="display:flex;align-items:center;gap:8px;">
+            <span class="faq-answer-count">${answerLabel}</span>
+            <button class="btn-faq-answer" onclick="openAnswerModal('${faq.id}', \`${escapeHtml(faq.question_text).replace(/`/g,"'")}\`)">Answer</button>
+          </div>
+        </div>
+      </div>
+    </div>`;
+  }
+
+  // Filter FAQ by search
+  window.filterFAQ = function(query) {
+    const q = query.toLowerCase();
+    const filtered = q ? allFAQs.filter(f =>
+      f.question_text.toLowerCase().includes(q) ||
+      (f.faq_answers||[]).some(a => a.answer_text.toLowerCase().includes(q))
+    ) : allFAQs;
+    renderFullFAQ(filtered);
+  };
+
+  // Toggle like on an FAQ
+  window.toggleFAQLike = async function(btn, faqId) {
+    if (DEMO_MODE) { showLandingToast('Likes require a Supabase account.', 'info'); return; }
+    if (!currentUser && db) {
+      const { data: { session } } = await db.auth.getSession();
+      if (session) currentUser = session.user;
+    }
+    if (!currentUser) {
+      sessionStorage.setItem('returnTo', 'faq');
+      goToLogin();
+      showLandingLoginHint();
+      return;
+    }
+
+    const isLiked = btn.classList.contains('liked');
+    const countEl = btn.querySelector('.like-count');
+    let count = parseInt(countEl.textContent, 10) || 0;
+
+    // Optimistic UI
+    btn.classList.toggle('liked');
+    countEl.textContent = isLiked ? count - 1 : count + 1;
+    btn.title = isLiked ? 'Like this question' : 'Unlike this question';
+
+    try {
+      if (isLiked) {
+        const { error } = await db.from('faq_likes').delete()
+          .eq('faq_id', faqId).eq('user_id', currentUser.id);
+        if (error) throw error;
+        if (window._faqLikedIds) window._faqLikedIds.delete(faqId);
+      } else {
+        const { error } = await db.from('faq_likes').insert({ faq_id: faqId, user_id: currentUser.id });
+        if (error) throw error;
+        if (window._faqLikedIds) window._faqLikedIds.add(faqId);
+      }
+    } catch(err) {
+      // Revert on failure
+      btn.classList.toggle('liked');
+      countEl.textContent = count;
+      btn.title = isLiked ? 'Unlike this question' : 'Like this question';
+      console.error('Like error:', err);
+      showLandingToast('Could not update like. Please try again.', 'error');
+    }
+  };
+
+  // Ask question modal
+  async function openAskModal() {
+    if (DEMO_MODE) { showLandingToast('FAQ requires a Supabase account.', 'info'); return; }
+    if (!currentUser && db) {
+      const { data: { session } } = await db.auth.getSession();
+      if (session) currentUser = session.user;
+    }
+    if (!currentUser) {
+      sessionStorage.setItem('returnTo', 'faq');
+      goToLogin();
+      showLandingLoginHint();
+      return;
+    }
+    await fillUserInfoStrip('faq-user-avatar', 'faq-user-name', 'faq-user-since');
+    document.getElementById('faq-ask-modal').classList.remove('hidden');
+    document.body.style.overflow = 'hidden';
+  }
+
+  function closeAskModal() {
+    document.getElementById('faq-ask-modal').classList.add('hidden');
+    document.body.style.overflow = '';
+    document.getElementById('faq-question-text').value = '';
+    document.getElementById('faq-q-counter').textContent = '0/400';
+  }
+
+  document.getElementById('btn-ask-question')?.addEventListener('click', openAskModal);
+  document.getElementById('btn-ask-question-full')?.addEventListener('click', openAskModal);
+  document.getElementById('btn-close-faq-modal')?.addEventListener('click', closeAskModal);
+  document.getElementById('btn-cancel-faq')?.addEventListener('click', closeAskModal);
+
+  const faqQText = document.getElementById('faq-question-text');
+  if (faqQText) faqQText.addEventListener('input', () => {
+    document.getElementById('faq-q-counter').textContent = `${faqQText.value.length}/400`;
+  });
+
+  document.getElementById('btn-submit-faq')?.addEventListener('click', async () => {
+    const text = document.getElementById('faq-question-text').value.trim();
+    if (!text || text.length < 10) { showLandingToast('Please write at least 10 characters', 'error'); return; }
+    const btn = document.getElementById('btn-submit-faq');
+    btn.disabled = true; btn.textContent = 'Posting...';
+    try {
+      const { data: prof } = await db.from('profiles').select('username, pfp_url').eq('id', currentUser.id).single();
+      const username = prof?.username || currentUser.user_metadata?.username || currentUser.email?.split('@')[0] || 'user';
+      const pfpUrl   = prof?.pfp_url || localStorage.getItem(`pfp_${currentUser.id}`) || null;
+      const { error } = await db.from('faqs').insert({
+        user_id: currentUser.id, 
+        username,
+        pfp_url: pfpUrl,
+        user_created_at: currentUser.created_at,
+        question_text: text,
+        is_published: true
+      });
+      if (error) {
+        console.error('FAQ insert error:', error);
+        if (error.message.includes('relation') && error.message.includes('does not exist')) {
+          showLandingToast('FAQs table not found. Please run faq_setup.sql in Supabase.', 'error');
+        } else if (error.message.includes('violates check constraint')) {
+          showLandingToast('Question must be 10-400 characters.', 'error');
+        } else {
+          showLandingToast('Error: ' + error.message, 'error');
+        }
+        throw error;
+      }
+      showLandingToast('Question posted!', 'success');
+      closeAskModal();
+      document.getElementById('faq-question-text').value = '';
+      document.getElementById('faq-q-counter').textContent = '0/400';
+      loadFAQPreview();
+      if (!document.getElementById('page-faq').classList.contains('hidden')) loadFAQFull();
+    } catch(err) {
+      console.error('FAQ post error:', err);
+      // Error already handled above
+    } finally {
+      btn.disabled = false; btn.textContent = 'Post Question';
+    }
+  });
+
+  // Answer modal
+  window.openAnswerModal = async function(faqId, questionText) {
+    if (DEMO_MODE) { showLandingToast('FAQ requires a Supabase account.', 'info'); return; }
+    if (!currentUser && db) {
+      const { data: { session } } = await db.auth.getSession();
+      if (session) currentUser = session.user;
+    }
+    if (!currentUser) {
+      sessionStorage.setItem('returnTo', 'faq');
+      goToLogin();
+      showLandingLoginHint();
+      return;
+    }
+    answeringFAQId = faqId;
+    document.getElementById('faq-question-preview').textContent = questionText;
+    await fillUserInfoStrip('faq-answer-user-avatar', 'faq-answer-user-name', null);
+    document.getElementById('faq-answer-modal').classList.remove('hidden');
+    document.body.style.overflow = 'hidden';
+  };
+
+  function closeAnswerModal() {
+    document.getElementById('faq-answer-modal').classList.add('hidden');
+    document.body.style.overflow = '';
+    document.getElementById('faq-answer-text').value = '';
+    document.getElementById('faq-a-counter').textContent = '0/600';
+    answeringFAQId = null;
+  }
+
+  document.getElementById('btn-close-answer-modal')?.addEventListener('click', closeAnswerModal);
+  document.getElementById('btn-cancel-answer')?.addEventListener('click', closeAnswerModal);
+
+  const faqAText = document.getElementById('faq-answer-text');
+  if (faqAText) faqAText.addEventListener('input', () => {
+    document.getElementById('faq-a-counter').textContent = `${faqAText.value.length}/600`;
+  });
+
+  document.getElementById('btn-submit-answer')?.addEventListener('click', async () => {
+    const text = document.getElementById('faq-answer-text').value.trim();
+    if (!text || text.length < 5) { showLandingToast('Please write at least 5 characters', 'error'); return; }
+    const btn = document.getElementById('btn-submit-answer');
+    btn.disabled = true; btn.textContent = 'Posting...';
+    try {
+      const { data: prof } = await db.from('profiles').select('username').eq('id', currentUser.id).single();
+      const username = prof?.username || currentUser.user_metadata?.username || currentUser.email?.split('@')[0] || 'user';
+      const { error } = await db.from('faq_answers').insert({
+        faq_id: answeringFAQId, user_id: currentUser.id, username,
+        user_created_at: currentUser.created_at,
+        answer_text: text
+      });
+      if (error) throw error;
+      showLandingToast('Answer posted!', 'success');
+      closeAnswerModal();
+      if (!document.getElementById('page-faq').classList.contains('hidden')) loadFAQFull();
+      else loadFAQPreview();
+    } catch(err) {
+      console.error('FAQ answer error:', err);
+      showLandingToast('Failed to post answer.', 'error');
+    } finally {
+      btn.disabled = false; btn.textContent = 'Post Answer';
+    }
+  });
+
+  loadFAQPreview();
+
+  /* ══════════════════════════════════════════════════
+     SESSION CHECK + USER NAV
+  ══════════════════════════════════════════════════ */
+  async function checkLandingSession() {
+    if (DEMO_MODE || !db) return;
+    try {
+      const { data: { session } } = await db.auth.getSession();
+      if (session) { currentUser = session.user; activateLandingUserNav(session.user); }
+    } catch (e) { /* silent */ }
+  }
+  checkLandingSession();
+
+  function activateLandingUserNav(user) {
+    const launchBtn = document.getElementById('lp-btn-launch');
+    const userNav   = document.getElementById('lp-user-nav');
+    if (launchBtn) launchBtn.classList.add('hidden');
+    if (userNav)   userNav.classList.remove('hidden');
+
+    // PFP: try DB first, then localStorage
+    const avatar = document.getElementById('lp-pfp-avatar');
+    if (avatar) {
+      const username = user.user_metadata?.username || user.email || '';
+      // Async: load pfp from DB
+      (async () => {
+        let pfpUrl = null;
+        if (!DEMO_MODE && db) {
+          const { data } = await db.from('profiles').select('pfp_url').eq('id', user.id).single();
+          pfpUrl = data?.pfp_url || null;
+        }
+        if (!pfpUrl) pfpUrl = localStorage.getItem(`pfp_${user.id}`) || null;
+        if (pfpUrl) {
+          avatar.style.backgroundImage = `url(${pfpUrl})`;
+          avatar.style.backgroundSize  = 'cover';
+          avatar.style.backgroundPosition = 'center';
+          avatar.textContent = '';
+        } else {
+          avatar.textContent = username.charAt(0).toUpperCase() || 'A';
+        }
+      })();
+    }
+
+    const dashBtn = document.getElementById('lp-btn-dashboard');
+    if (dashBtn) dashBtn.addEventListener('click', () => showApp());
+
+    const pfpWrap     = document.getElementById('lp-pfp-wrap');
+    const pfpDropdown = document.getElementById('lp-pfp-dropdown');
+    if (pfpWrap && pfpDropdown) {
+      pfpWrap.addEventListener('click', (e) => { e.stopPropagation(); pfpDropdown.classList.toggle('hidden'); });
+      document.addEventListener('click', () => pfpDropdown.classList.add('hidden'));
+    }
+
+    const accountBtn = document.getElementById('lp-pfp-account');
+    if (accountBtn) {
+      accountBtn.addEventListener('click', async () => {
+        pfpDropdown.classList.add('hidden');
+        await showApp();
+        setTimeout(() => {
+          if (typeof navigateTo === 'function') navigateTo('settings');
+          if (typeof openSettingsTab === 'function') openSettingsTab('account');
+        }, 300);
+      });
+    }
+
+    const signoutBtn = document.getElementById('lp-pfp-signout');
+    if (signoutBtn) {
+      signoutBtn.addEventListener('click', async () => {
+        pfpDropdown.classList.add('hidden');
+        if (db) await db.auth.signOut();
+        currentUser = null;
+        if (launchBtn) launchBtn.classList.remove('hidden');
+        if (userNav)   userNav.classList.add('hidden');
+        showLandingToast('Signed out successfully', 'success');
+      });
+    }
+  }
+
+  // Handle return intent
+  function handleReturnIntent() {
+    const returnTo = sessionStorage.getItem('returnTo');
+    if (!returnTo) return;
+    sessionStorage.removeItem('returnTo');
+    if (currentUser) {
+      document.getElementById('page-landing').classList.remove('hidden');
+      document.getElementById('page-login').classList.add('hidden');
+      document.getElementById('page-signup').classList.add('hidden');
+      document.getElementById('page-app').classList.add('hidden');
+      if (returnTo === 'review') {
+        setTimeout(() => {
+          const section = document.getElementById('lp-testimonials');
+          if (section) section.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          setTimeout(async () => {
+            const modal = document.getElementById('review-modal');
+            if (modal) {
+              await fillUserInfoStrip('review-user-avatar','review-user-name','review-user-since');
+              modal.classList.remove('hidden');
+              document.body.style.overflow = 'hidden';
+            }
+          }, 600);
+        }, 100);
+      } else if (returnTo === 'faq') {
+        showFAQPage(null);
+      }
+    }
+  }
+
+  window._handleReturnIntent = handleReturnIntent;
+});
+
+/* ─── Landing page toast ─── */
+function showLandingToast(msg, type) {
+  let container = document.getElementById('landing-toasts');
+  if (!container) {
+    container = document.createElement('div');
+    container.id = 'landing-toasts';
+    container.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:9999;display:flex;flex-direction:column;gap:8px;pointer-events:none;';
+    document.body.appendChild(container);
+  }
+  const el = document.createElement('div');
+  const bg = type === 'info' ? '#4e7ab1' : type === 'error' ? '#ef4444' : '#34d399';
+  el.style.cssText = `background:${bg};color:#fff;padding:12px 22px;border-radius:10px;font-size:14px;font-weight:500;box-shadow:0 4px 16px rgba(0,0,0,0.3);pointer-events:auto;`;
+  el.textContent = msg;
+  container.appendChild(el);
+  setTimeout(() => { el.style.opacity='0'; el.style.transition='opacity 0.3s'; setTimeout(()=>el.remove(),350); }, 3500);
+}
+
+function showLandingLoginHint() {
+  setTimeout(() => {
+    const card = document.querySelector('#page-login .login-card');
+    if (!card || document.getElementById('review-login-hint')) return;
+    const hint = document.createElement('p');
+    hint.id = 'review-login-hint';
+    hint.style.cssText = 'text-align:center;font-size:13px;color:#d6a7c2;margin-top:12px;';
+    hint.textContent = '✍️ Sign in to continue — you\'ll be taken straight back.';
+    card.appendChild(hint);
+  }, 100);
+}
+
+/* ===== NEW LANDING interactions (scoped) ===== */
+
+(function(){
+  'use strict';
+  function ready(fn){document.readyState!=='loading'?fn():document.addEventListener('DOMContentLoaded',fn);}
+  ready(function(){
+    var LP_ROOT=document.getElementById('page-landing')||document;
+    // Mark that JS is active — this engages the hidden-then-reveal animation.
+    // Without this class (JS failed / cached / disabled) content stays visible.
+    if(LP_ROOT&&LP_ROOT.classList) LP_ROOT.classList.add('js-reveal');
+    var nav=document.getElementById('nav');
+    var prog=document.getElementById('prog');
+    var reveals=[].slice.call(LP_ROOT.querySelectorAll('.reveal, .stagger'));
+    var counters=[].slice.call(LP_ROOT.querySelectorAll('[data-count]'));
+    counters.forEach(function(el){el.setAttribute('data-from',el.textContent);el.setAttribute('data-done','0');});
+    var donut=document.getElementById('donutSeg');
+    var howWrap=document.getElementById('howWrap'), howFill=document.getElementById('howFill');
+    var steps=[].slice.call(LP_ROOT.querySelectorAll('.step'));
+
+    function vh(){return window.innerHeight||800;}
+    function inView(el,f){var r=el.getBoundingClientRect();return r.top<vh()*(f||.86)&&r.bottom>0;}
+    function tween(el,dur,fn,delay){function go(){var s=null;function fr(t){if(!s)s=t;var p=Math.min(1,(t-s)/dur);fn(1-Math.pow(1-p,3),p);if(p<1)requestAnimationFrame(fr);}requestAnimationFrame(fr);}if(delay)setTimeout(go,delay);else go();}
+    if(donut){donut.style.strokeDashoffset='188.5';tween(donut,1400,function(e){donut.style.strokeDashoffset=(188.5-128.5*e);},500);}
+
+    function count(el){
+      if(el.getAttribute('data-done')==='1')return;el.setAttribute('data-done','1');
+      var raw=el.getAttribute('data-from'),m=raw.match(/[\d,]*\.?\d+/);if(!m)return;
+      var num=m[0],pre=el.getAttribute('data-pre')||'',suf=el.getAttribute('data-suf')||'',comma=el.getAttribute('data-comma')==='1';
+      var target=parseFloat(num.replace(/,/g,''));if(isNaN(target))return;
+      var dur=1400,s=null;
+      function fmt(v){var n=Math.round(v);return pre+(comma?n.toLocaleString('en-IN'):n)+suf;}
+      function step(t){if(!s)s=t;var p=Math.min(1,(t-s)/dur),e=1-Math.pow(1-p,3);el.textContent=fmt(target*e);if(p<1)requestAnimationFrame(step);}
+      el.textContent=fmt(0);requestAnimationFrame(step);
+    }
+
+    function update(){
+      try {
+        var doc=document.documentElement,sc=window.pageYOffset||doc.scrollTop||0,max=doc.scrollHeight-doc.clientHeight;
+        if(prog) prog.style.width=(max>0?sc/max*100:0)+'%';
+        if(nav) nav.classList.toggle('scrolled',sc>24);
+        reveals.forEach(function(el){
+          if(el.getAttribute('data-rev')==='1')return;
+          if(inView(el,.92)){
+            el.setAttribute('data-rev','1');
+            if(el.classList.contains('stagger')){
+              [].slice.call(el.children).forEach(function(ch,i){tween(ch,640,function(e){ch.style.opacity=e;ch.style.transform=e<1?'translateY('+(28*(1-e))+'px)':'none';},i*85);});
+            } else {
+              tween(el,760,function(e){el.style.opacity=e;el.style.transform=e<1?'translateY('+(34*(1-e))+'px)':'none';});
+            }
+          }
+        });
+        counters.forEach(function(el){if(el.getAttribute('data-done')!=='1'&&inView(el,.95))count(el);});
+        if(howWrap&&howFill){
+          var r=howWrap.getBoundingClientRect(),prog2=Math.max(0,Math.min(1,(vh()*.6-r.top)/(r.height*.7)));
+          howFill.style.width=(prog2*78)+'%';
+          var active=Math.round(prog2*steps.length);
+          steps.forEach(function(s,i){s.classList.toggle('on',i<active);});
+        }
+      } catch(err){
+        // Never let an animation error leave content invisible
+        console.error('landing update error', err);
+        revealAll();
+      }
+    }
+    // Safety net: if anything goes wrong, make every reveal element visible
+    function revealAll(){
+      reveals.forEach(function(el){
+        el.setAttribute('data-rev','1');
+        el.style.opacity='1';
+        el.style.transform='none';
+        [].slice.call(el.children||[]).forEach(function(ch){ ch.style.opacity='1'; ch.style.transform='none'; });
+      });
+    }
+    update();
+    window.addEventListener('scroll',update,{passive:true});
+    window.addEventListener('resize',update);
+    // Belt-and-suspenders: ensure hero/content is never stuck hidden
+    setTimeout(revealAll, 1200);
+
+    /* hero mockup 3D tilt — applied to the wrapper so the .mock keeps its
+       CSS "floaty" animation (an inline transform on .mock would override it) */
+    var tilt=document.getElementById('tiltWrap'),mock=document.getElementById('mock');
+    if(tilt){
+      tilt.style.transformStyle='preserve-3d';
+      tilt.addEventListener('mousemove',function(e){
+        var r=tilt.getBoundingClientRect(),px=(e.clientX-r.left)/r.width-.5,py=(e.clientY-r.top)/r.height-.5;
+        tilt.style.transform='rotateY('+(px*9)+'deg) rotateX('+(-py*9)+'deg)';
+      });
+      tilt.addEventListener('mouseleave',function(){tilt.style.transform='rotateY(0) rotateX(0)';});
+    }
+
+    /* feature cards cursor glow */
+    [].slice.call(LP_ROOT.querySelectorAll('.feat')).forEach(function(c){
+      c.addEventListener('mousemove',function(e){var r=c.getBoundingClientRect();c.style.setProperty('--mx',((e.clientX-r.left)/r.width*100)+'%');c.style.setProperty('--my',((e.clientY-r.top)/r.height*100)+'%');});
+    });
+
+    /* contact form → save to Supabase (triggers email via Edge Function) */
+    var form=document.getElementById('contactForm'),ok=document.getElementById('okMsg');
+    if(form){form.addEventListener('submit',async function(e){
+      e.preventDefault();
+      var btn=form.querySelector('button[type="submit"]');
+      var orig=btn?btn.textContent:'';
+      if(btn){btn.disabled=true;btn.textContent='Sending…';}
+      var fd=new FormData(form);
+      var payload={
+        name:(fd.get('name')||'').toString().trim(),
+        email:(fd.get('email')||'').toString().trim(),
+        subject:(fd.get('subject')||'').toString().trim(),
+        message:(fd.get('message')||'').toString().trim()
+      };
+      try{
+        if(typeof DEMO_MODE!=='undefined'&&DEMO_MODE){throw new Error('demo');}
+        var res=await db.from('contact_messages').insert(payload);
+        if(res.error)throw res.error;
+        form.reset();
+        ok.textContent='✓ Message sent! We\'ll get back to you soon.';
+        ok.classList.add('show');
+        setTimeout(function(){ok.classList.remove('show');},5000);
+      }catch(err){
+        console.error('Contact form error:',err);
+        ok.textContent='Couldn\'t send — please email hello@fino.app directly.';
+        ok.style.color='#f87171';
+        ok.classList.add('show');
+        setTimeout(function(){ok.classList.remove('show');ok.style.color='';},6000);
+      }finally{
+        if(btn){btn.disabled=false;btn.textContent=orig;}
+      }
+    });}
+
+    /* starfield */
+    var cv=document.getElementById('stars'),ctx=cv&&cv.getContext?cv.getContext('2d'):null,W,H,dpr,parts=[];
+    if(cv&&ctx){
+    function size(){dpr=Math.min(window.devicePixelRatio||1,2);W=cv.width=innerWidth*dpr;H=cv.height=innerHeight*dpr;cv.style.width=innerWidth+'px';cv.style.height=innerHeight+'px';}
+    size();window.addEventListener('resize',size);
+    var cols=['123,184,240','206,181,212','52,211,153','78,122,177'];
+    for(var i=0;i<46;i++)parts.push({x:Math.random(),y:Math.random(),r:Math.random()*1.6+.4,sp:Math.random()*.4+.12,a:Math.random()*.5+.2,c:cols[(Math.random()*cols.length)|0],ph:Math.random()*6.28});
+    var t0=performance.now();
+    function draw(now){
+      var lp=document.getElementById('page-landing');
+      if(lp&&lp.classList.contains('hidden')){requestAnimationFrame(draw);return;}
+      var tt=(now-t0)/1000;ctx.clearRect(0,0,W,H);
+      for(var i=0;i<parts.length;i++){var p=parts[i];p.y-=p.sp/100;if(p.y<-.02){p.y=1.02;p.x=Math.random();}
+        var tw=.55+.45*Math.sin(tt*1.5+p.ph);ctx.fillStyle='rgba('+p.c+','+(p.a*tw)+')';ctx.beginPath();ctx.arc(p.x*W,p.y*H,p.r*dpr,0,6.28);ctx.fill();}
+      requestAnimationFrame(draw);
+    }
+    requestAnimationFrame(draw);
+    }
+  });
+})();
+
+/* ===== END NEW LANDING interactions ===== */
